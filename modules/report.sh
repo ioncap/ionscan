@@ -12,22 +12,8 @@ MOD_OPTIONS_REPORT_REPORT[FORMAT]="description='Output format (html or json)' re
 MOD_OPTIONS_REPORT_REPORT[AUTO_OPEN]="description='Automatically open HTML report in browser' required=false default='false'"
 
 mod_report() {
-    local _output_format="html" # Default output format
-    local _auto_open=false
-
-    # Parse arguments for mod_report
-    for arg in "$@"; do
-        case "$arg" in
-            --auto)
-                _auto_open=true
-                ;;
-            --output=*)
-                _output_format="${arg#*=}"
-                ;;
-            *)
-                ;;
-        esac
-    done
+    local _output_format="${MODULE_OPTIONS[FORMAT]}"
+    local _auto_open="${MODULE_OPTIONS[AUTO_OPEN]}"
 
     # Prepare environment variables for the Python script
     export LOG_DIR OUI_DB
@@ -65,10 +51,9 @@ mod_report() {
         fi
         send_webhook "Report generated. $HOSTS active hosts found."
 
-        if command -v xdg-open &> /dev/null && [[ "$_auto_open" == "false" ]]; then
-            read -rp "    Open in browser? (y/n): " OPEN
-            if [[ "$OPEN" =~ ^[Yy]$ ]]; then open_browser "$report_file"; fi
+        if [[ "$_auto_open" == "true" ]]; then
+            open_browser "$report_file"
         fi
-        if [[ "$_auto_open" == "false" ]]; then pause; fi
+        log_info "Report generation complete."
     fi
 }

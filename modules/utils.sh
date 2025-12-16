@@ -24,13 +24,31 @@ declare -gA MOD_OPTIONS_UTILS_DECOY
 MOD_OPTIONS_UTILS_DECOY[TARGET]="description='Target IP for decoy scan' required=true"
 MOD_OPTIONS_UTILS_DECOY[DECOYS]="description='Number of decoys to use' required=false default='10'"
 
+# Options for mod_cron
+# This module will be refactored later to be configurable via options.
+# For now, it will simply log a warning message.
+
+
 # [4] MAC
-mod_mac() { header; get_interface; log_info "Shifting MAC..."; sudo macchanger -r "$DEFAULT_IFACE"; pause; }
+mod_mac() {
+    local interface="${MODULE_OPTIONS[INTERFACE]}"
+
+    if [[ -z "$interface" ]]; then
+        log_error "Required option 'INTERFACE' not set. Use 'set INTERFACE <interface>'."
+        return
+    fi
+    
+    log_info "Shifting MAC on $interface..."
+    sudo macchanger -r "$interface"
+    log_info "MAC address changed."
+}
 
 # [5] ARP WATCH
 mod_arp() {
-    header; get_interface; local G; G=$(ip route | grep default | awk '{print $3}' | head -n1)
-    if [[ -z "$G" ]]; then log_error "No gateway found."; pause; return; fi
+    # This module doesn't currently take options from MODULE_OPTIONS.
+    # It watches the default gateway.
+    get_interface; local G; G=$(ip route | grep default | awk '{print $3}' | head -n1)
+    if [[ -z "$G" ]]; then log_error "No gateway found."; return; }
     log_info "Monitoring Gateway: $G (CTRL+C to stop)"
     M1=$(arp -n | grep "$G" | awk '{print $3}')
     while true; do
@@ -38,40 +56,56 @@ mod_arp() {
         M2=$(arp -n | grep "$G" | awk '{print $3}')
         if [[ "$M1" != "$M2" && -n "$M2" ]]; then echo -e "\n${RED}[!] ARP SPOOF DETECTED!${NC}"; echo -e "\a"; break; fi
         read -t 2 -N 1 input || true
-    done; pause
+    done
+    log_info "ARP monitoring stopped."
 }
 
 # [17] SSL
 mod_ssl() {
-    read -rp "Target IP: " t; read -rp "Port (443): " p
-    nmap -sV -p "${p:-443}" --script ssl-enum-ciphers,ssl-cert "$t"; pause
+    local target="${MODULE_OPTIONS[TARGET]}"
+    local port="${MODULE_OPTIONS[PORT]}"
+
+    if [[ -z "$target" ]]; then
+        log_error "Required option 'TARGET' not set. Use 'set TARGET <ip>'."
+        return
+    fi
+    
+    log_info "Checking SSL on $target:$port..."
+    nmap -sV -p "$port" --script ssl-enum-ciphers,ssl-cert "$target"
+    log_info "SSL inspection complete."
 }
 
 # [15] PAYLOAD
 mod_serve() {
-    read -rp "Port (8080): " p; p=${p:-8080}
-    log_info "http://$MY_IP:$p"
-    python3 -m http.server "$p"; pause
+    local port="${MODULE_OPTIONS[PORT]}"
+    
+    if [[ -z "$port" ]]; then
+        log_error "Required option 'PORT' not set. Use 'set PORT <port>'."
+        return
+    fi
+
+    log_info "Serving HTTP on http://$MY_IP:$port..."
+    python3 -m http.server "$port"
+    log_info "HTTP server stopped."
 }
 
 # [3] DECOY SWARM
 mod_decoy() {
-    header
-    read -rp "Target IP (b=back): " T
-    [[ "$T" =~ ^[bB]$ ]] && return
-    log_info "Swarming..."; sudo nmap -D RND:10 -sS --top-ports 50 "$T"; pause
+    local target="${MODULE_OPTIONS[TARGET]}"
+    local decoys="${MODULE_OPTIONS[DECOYS]}"
+
+    if [[ -z "$target" ]]; then
+        log_error "Required option 'TARGET' not set. Use 'set TARGET <ip>'."
+        return
+    fi
+    
+    log_info "Swarming $target with $decoys decoys..."
+    sudo nmap -D RND:"$decoys" -sS --top-ports 50 "$target"
+    log_info "Decoy scan complete."
 }
 
 # [20] AUTO-SCHEDULER (Fixed)
 mod_cron() {
-    header; echo -e "${CYAN}[ AUTO-SCHEDULER ]${NC}"
-    SCRIPT_PATH=$(readlink -f "$0")
-    echo "Current path: $SCRIPT_PATH"
-    echo "This will add a cron job to run IonScan every hour."
-    read -rp "Add to crontab? (y/n): " C
-    if [[ "$C" =~ ^[Yy]$ ]]; then
-        (crontab -l 2>/dev/null; echo "0 * * * * /usr/bin/flock -n /tmp/ionscan.lock $SCRIPT_PATH --auto") | crontab -
-        log_success "Cron job added."
-    fi
-    pause
+    log_warning "mod_cron is not yet fully supported in the interactive shell due to its interactive nature."
+    log_warning "Please run the main script with '--setup' to manage cron jobs."
 }

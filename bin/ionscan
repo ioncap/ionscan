@@ -60,8 +60,7 @@ cmd_show() {
                 local mods; mods=$(grep -oP '(?<=^mod_)[a-zA-Z0-9_]+' "$file")
                 if [[ -n "$mods" ]]; then
                     echo -e "  ${CYAN}${category}${NC}:"
-                    for mod in $mods;
- do
+                    for mod in $mods; do
                         echo "    - $category/$mod"
                     done
                 fi
@@ -77,7 +76,7 @@ cmd_show() {
             echo -e "${BOLD}Module Options for: ${RED}${CURRENT_MODULE}${NC}"
             echo "================================================="
             
-            local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\/_}"
+            local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//	kinter_/_}"
             options_array_name=${options_array_name^^}
 
             if ! declare -p "$options_array_name" &>/dev/null; then
@@ -89,10 +88,10 @@ cmd_show() {
 ${!$options_array_name[@]}" )
             
             printf "  %-15s %-15s %-10s %s\n" "Name" "Current Setting" "Required" "Description"
-            printf "  %-15s %-15s %-10s %s\n" "----" "---------------" "--------" "-----------"
+            printf "  %-15s %-15s %-10s %s\n" "----" "---------------" "--------" "-----------" 
             
-            for key in $keys_str; 
-do
+            for key in $keys_str;
+ do
                 local option_details; option_details=$(eval echo "\
 ${$options_array_name[$key]}" )
                 
@@ -122,7 +121,8 @@ cmd_use() {
         source "$module_path"
         
         # Check if the mod_ function exists
-        if ! command -v "mod_${module_sub_name}" >/dev/null 2>&1; then
+        if ! command -v "mod_${module_sub_name}" >/dev/null 2>&1;
+ then
             log_error "Sub-module '$module_sub_name' not found in '$module_category'."
             return
         fi
@@ -132,14 +132,15 @@ cmd_use() {
         log_info "Module '$module_name' loaded."
         
         # Pre-load default options
-        local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\/_}"
+        local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//	kinter_/_}"
         options_array_name=${options_array_name^^}
 
-        if declare -p "$options_array_name" &>/dev/null; then
+        if declare -p "$options_array_name" &>/dev/null;
+ then
             local keys_str; keys_str=$(eval echo "\
 ${!$options_array_name[@]}" )
-            for key in $keys_str; 
-do
+            for key in $keys_str;
+ do
                 local option_details; option_details=$(eval echo "\
 ${$options_array_name[$key]}" )
                 local default_val; default_val=$(echo "$option_details" | grep -o "default='[^']*'" | cut -d'\' -f2)
@@ -173,10 +174,11 @@ cmd_set() {
         return
     fi
     
-    local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\/_}"
+    local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//	kinter_/_}"
     options_array_name=${options_array_name^^}
     
-    if ! declare -p "$options_array_name" &>/dev/null; then
+    if ! declare -p "$options_array_name" &>/dev/null;
+ then
         log_error "Module has no options to set."
         return
     fi
@@ -201,7 +203,8 @@ cmd_run() {
     local module_sub_name; module_sub_name=$(echo "$CURRENT_MODULE" | cut -d'/' -f2)
     local func_to_run="mod_${module_sub_name}"
 
-    if command -v "$func_to_run" >/dev/null 2>&1; then
+    if command -v "$func_to_run" >/dev/null 2>&1;
+ then
         # Before running, check for required options
         # ... (to be implemented)
         
@@ -214,8 +217,8 @@ cmd_run() {
 
 # --- INTERACTIVE SHELL ---
 interactive_shell() {
-    while true; 
-do
+    while true;
+ do
         local prompt="ionscan"
         if [[ -n "$CURRENT_MODULE" ]]; then
             prompt="${prompt} (${CURRENT_MODULE})"
@@ -252,9 +255,6 @@ do
                 ;; 
             exit|quit)
                 cmd_exit
-                ;;
-                ;; 
-            "" # Empty command
                 ;; 
             *)
                 log_error "Unknown command: '$cmd'. Type 'help' for a list of commands."
