@@ -116,10 +116,13 @@ menu_utils() {
 main() {
     setup_config
 
+    local REPORT_OUTPUT_FORMAT="html" # Default output format for main menu calls
+    local SILENT=false # Default to not silent
+
     # Argument Parsing with getopt
-    # Short options: a (auto), s (setup), h (help), g (agree), i (silent)
-    # Long options: auto, setup, help, agree, silent
-    ARGS=$(getopt -o ashi -l auto,setup,help,agree,silent -- "$@")
+    # Short options: a (auto), s (setup), h (help), g (agree), v (silent), o: (output)
+    # Long options: auto, setup, help, agree, silent, output:
+    ARGS=$(getopt -o ashgvo: -l auto,setup,help,agree,silent,output: -- "$@")
     if [[ $? -ne 0 ]]; then
         show_help
         exit 1
@@ -132,7 +135,7 @@ main() {
                 exec 200>"$LOCK_FILE"; flock -n 200 || exit 1
                 check_deps "silent"; get_interface
                 timeout 30s tcpdump -i "$DEFAULT_IFACE" -n -e "arp or udp port 5353" -w "$LOG_DIR/live_traffic.pcap" 2>/dev/null
-                mod_report "--auto"
+                mod_report "--auto --output=html" # Auto mode always generates HTML report
                 exit 0
                 ;;
             -s|--setup)
@@ -147,9 +150,13 @@ main() {
                 AGREED=true
                 shift
                 ;;
-            -i|--silent)
+            -v|--silent) # Corrected short option from 'i' to 'v'
                 SILENT=true
                 shift
+                ;;
+            -o|--output) # Handle output format
+                REPORT_OUTPUT_FORMAT="$2"
+                shift 2
                 ;;
             --)
                 shift
@@ -200,7 +207,13 @@ main() {
         fi
         if is_module_enabled "REPORT"; then
             echo -e "  [${menu_option_counter}] Generate Report"
-            menu_choices+=("$menu_option_counter) mod_report")
+            # Pass the selected output format to mod_report
+            # If SILENT is true, don't ask to open in browser
+            local report_args="--output=\"$REPORT_OUTPUT_FORMAT\""
+            if [[ "$SILENT" == "true" ]]; then
+                report_args+=" --auto" # --auto in mod_report prevents browser open and pause
+            fi
+            menu_choices+=("$menu_option_counter) mod_report $report_args")
             ((menu_option_counter++))
         fi
         echo -e "  [0] Exit"
@@ -209,7 +222,7 @@ main() {
 
         local selected_action=""
         for choice in "${menu_choices[@]}"; do
-            local num="${choice%%)*}"
+            local num="${choice%%)*} "
             local func="${choice#*)}"
             if [[ "$num" == "$c" ]]; then
                 selected_action="$func"
@@ -218,14 +231,15 @@ main() {
         done
 
         case "$c" in
-            0) exit 0 ;;
-            *)
+            0) exit 0 ;; 
+            *) 
                 if [[ -n "$selected_action" ]]; then
-                    $selected_action
+                    # Execute the selected action, passing along any required arguments
+                    eval "$selected_action"
                 else
                     log_warning "Invalid option."
                 fi
-                ;;
+                ;; 
         esac
     done
 }
