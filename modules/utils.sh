@@ -9,7 +9,7 @@ mod_mac() { header; get_interface; log_info "Shifting MAC..."; sudo macchanger -
 
 # [5] ARP WATCH
 mod_arp() {
-    header; get_interface; G=$(ip route | grep default | awk '{print $3}' | head -n1)
+    header; get_interface; G=$(ip route | grep default | awk '{print $3}' | head -n1); local G
     if [[ -z "$G" ]]; then log_error "No gateway found."; pause; return; fi
     log_info "Monitoring Gateway: $G (CTRL+C to stop)"
     M1=$(arp -n | grep "$G" | awk '{print $3}')
@@ -23,13 +23,13 @@ mod_arp() {
 
 # [17] SSL
 mod_ssl() {
-    read -p "Target IP: " t; read -p "Port (443): " p
+    read -rp "Target IP: " t; read -rp "Port (443): " p
     nmap -sV -p "${p:-443}" --script ssl-enum-ciphers,ssl-cert "$t"; pause
 }
 
 # [15] PAYLOAD
 mod_serve() {
-    read -p "Port (8080): " p; p=${p:-8080}
+    read -rp "Port (8080): " p; p=${p:-8080}
     log_info "http://$MY_IP:$p"
     python3 -m http.server "$p"; pause
 }
@@ -37,7 +37,7 @@ mod_serve() {
 # [3] DECOY SWARM
 mod_decoy() {
     header
-    read -p "Target IP (b=back): " T
+    read -rp "Target IP (b=back): " T
     [[ "$T" =~ ^[bB]$ ]] && return
     log_info "Swarming..."; sudo nmap -D RND:10 -sS --top-ports 50 "$T"; pause
 }
@@ -48,7 +48,7 @@ mod_cron() {
     SCRIPT_PATH=$(readlink -f "$0")
     echo "Current path: $SCRIPT_PATH"
     echo "This will add a cron job to run IonScan every hour."
-    read -p "Add to crontab? (y/n): " C
+    read -rp "Add to crontab? (y/n): " C
     if [[ "$C" =~ ^[Yy]$ ]]; then
         (crontab -l 2>/dev/null; echo "0 * * * * /usr/bin/flock -n /tmp/ionscan.lock $SCRIPT_PATH --auto") | crontab -
         log_success "Cron job added."

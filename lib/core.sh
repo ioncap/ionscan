@@ -15,7 +15,7 @@ INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
 LOG_DIR="$INSTALL_DIR/ionscan_logs"
 mkdir -p "$LOG_DIR"
 
-CONFIG_FILE="$INSTALL_DIR/config/ionscan.conf"
+CONFIG_FILE="$LOG_DIR/ionscan.conf"
 OUI_DB="$LOG_DIR/oui.txt"
 REPORT_FILE="$LOG_DIR/dashboard.html"
 MAIN_LOG="$LOG_DIR/ionscan.log"
@@ -38,7 +38,7 @@ get_config() {
 
 log_raw() {
     local level="$1"; local msg="$2"; local color="$3"
-    local ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ"); local ts
     if [[ -t 1 ]]; then printf "${color}[%s] %s${NC}\n" "$level" "$msg"; fi
     printf "%s [%s] %s\n" "$ts" "$level" "$msg" >> "$MAIN_LOG"
 }
@@ -100,7 +100,7 @@ open_browser() {
 
 send_webhook() {
     local msg="$1"
-    local url=$(get_config WEBHOOK_URL)
+    url=$(get_config WEBHOOK_URL); local url
     if [[ -n "$url" ]]; then
         log_info "Sending Webhook..."
         curl -H "Content-Type: application/json" -d "{\"content\": \"$msg\"}" "$url" >/dev/null 2>&1 || log_warning "Webhook failed."
@@ -163,7 +163,7 @@ check_deps() {
     if [[ ${#missing[@]} -gt 0 ]]; then
         if [[ "$silent" == "silent" ]]; then exit 1; fi
         echo -e "${RED}MISSING:${NC} ${missing[*]}"
-        read -p "Install? [y/N] " c
+        read -rp "Install? [y/N] " c
         if [[ "$c" =~ ^[Yy]$ ]]; then
             apt-get update && apt-get install -y "${missing[@]}"
             if [[ " ${missing[*]} " =~ "tshark" ]]; then sudo usermod -aG wireshark "$USER" 2>/dev/null || true; fi
@@ -172,13 +172,13 @@ check_deps() {
 }
 
 run_setup_wizard() {
-    echo -e "${BOLD}IONSCAN SETUP${NC}"; read -p "Install dependencies? [y/N] " P;
+    echo -e "${BOLD}IONSCAN SETUP${NC}"; read -rp "Install dependencies? [y/N] " P;
     if [[ ! "$P" =~ ^[Yy]$ ]]; then exit 0; fi
     sudo apt-get update && sudo apt-get install -y nmap macchanger tcpdump curl aircrack-ng bluez gobuster hydra tshark gawk util-linux netcat-openbsd dsniff dnsutils avahi-utils snmp nbtscan
     id -u "wireshark" &>/dev/null && sudo usermod -aG wireshark "$USER"
     if ! command -v msfconsole &> /dev/null;
         then
-        read -p "Install Metasploit? [y/N] " M
+        read -rp "Install Metasploit? [y/N] " M
         if [[ "$M" =~ ^[Yy]$ ]]; then
             curl https://raw.githubusercontent.com/rapid7/metasploit-omnibus/master/config/templates/metasploit-framework-wrappers/msfupdate.erb > msfinstall; chmod 755 msfinstall; sudo ./msfinstall; rm msfinstall
         fi

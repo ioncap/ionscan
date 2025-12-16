@@ -27,4 +27,4 @@ header() {
     echo -e "${CYAN}   ========================================================${NC}"
     echo ""
 }
-pause() { echo ""; read -p "Press [Enter] to return..." ; }
+pause() { echo ""; read -rp "Press [Enter] to return..." ; }

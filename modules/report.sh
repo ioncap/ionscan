@@ -8,13 +8,13 @@ mod_report() {
     header
     log_info "Generating Enterprise Dashboard..."
     export LOG_DIR OUI_DB
-    export PUB_IP=$(curl -s --connect-timeout 3 ifconfig.me || echo "Offline")
-    export GATEWAY=$(ip route | grep default | awk '{print $3}' | head -n1)
-    export DNS_SRV=$(grep "nameserver" /etc/resolv.conf | awk '{print $2}' | head -n1)
+    PUB_IP=$(curl -s --connect-timeout 3 ifconfig.me || echo "Offline"); export PUB_IP
+    GATEWAY=$(ip route | grep default | awk '{print $3}' | head -n1); export GATEWAY
+    DNS_SRV=$(grep "nameserver" /etc/resolv.conf | awk '{print $2}' | head -n1); export DNS_SRV
     export MY_IP DEFAULT_IFACE
 
     local template_file="$INSTALL_DIR/templates/dashboard.html"
-    local report_content_file=$(mktemp)
+    report_content_file=$(mktemp); local report_content_file
 
     # Generate content from python script
     python3 "$INSTALL_DIR/modules/report.py" > "$report_content_file"
@@ -34,7 +34,7 @@ mod_report() {
     send_webhook "Report generated. $HOSTS active hosts found."
 
     if command -v xdg-open &> /dev/null && [[ "${1:-}" != "--auto" ]]; then
-        read -p "    Open in browser? (y/n): " OPEN
+        read -rp "    Open in browser? (y/n): " OPEN
         if [[ "$OPEN" =~ ^[Yy]$ ]]; then open_browser "$REPORT_FILE"; fi
     fi
     if [[ "${1:-}" != "--auto" ]]; then pause; fi

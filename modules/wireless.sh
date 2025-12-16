@@ -6,9 +6,9 @@
 
 # [7] WIFI
 mod_wifi() {
-    local wlan=$(iw dev | awk '$1=="Interface"{print $2}')
+    wlan=$(iw dev | awk '$1=="Interface"{print $2}'); local wlan
     [[ -z "$wlan" ]] && { log_error "No WiFi card."; return; }
-    echo "Interface: $wlan"; read -p "Confirm? [y/N] " c
+    echo "Interface: $wlan"; read -rp "Confirm? [y/N] " c
     if [[ ! "$c" =~ ^[Yy]$ ]]; then return; fi
     airmon-ng check kill >/dev/null 2>&1
     airmon-ng start "$wlan" >/dev/null
@@ -17,7 +17,7 @@ mod_wifi() {
     log_success "Monitoring on $MON_IFACE (CTRL+C stop)"
     airodump-ng "$MON_IFACE"
     cleanup
-    read -p "Press Enter..."
+    read -rp "Press Enter..."
 }
 
 # [8] BLUETOOTH
@@ -26,6 +26,6 @@ mod_bt() {
     if ! command -v hciconfig &>/dev/null; then log_error "Bluez tools missing."; return; fi
     sudo hciconfig hci0 down && sudo hciconfig hci0 up
     log_info "Scanning..."
-    hcitool scan > bt.txt; sudo timeout 10s hcitool lescan >> bt.txt 2>/dev/null || true
+    hcitool scan > bt.txt; sudo timeout 10s hcitool lescan 2>/dev/null | sudo tee -a bt.txt || true
     cat bt.txt; rm bt.txt; pause
 }
