@@ -2,7 +2,7 @@
 
 # --- NETWORK CORE ---
 get_interface() {
-    cfg_iface=$(get_config DEFAULT_IFACE); local cfg_iface
+    local cfg_iface; cfg_iface=$(get_config DEFAULT_IFACE)
     if [[ -n "$cfg_iface" ]] && ip link show "$cfg_iface" &>/dev/null; then
         DEFAULT_IFACE="$cfg_iface"
     else
@@ -17,7 +17,7 @@ get_interface() {
 }
 
 get_vendor() {
-    mac=$(echo "$1" | tr -d ':' | tr '[:lower:]' '[:upper:]' | head -c 6); local mac
+    local mac; mac=$(echo "$1" | tr -d ':' | tr '[:lower:]' '[:upper:]' | head -c 6)
     [[ ! -f "$OUI_DB" ]] && echo "Unknown" && return
     grep -i "^${mac}" "$OUI_DB" | cut -f 3- | head -n 1 | xargs || echo "Unknown"
 }

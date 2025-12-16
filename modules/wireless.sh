@@ -6,7 +6,7 @@
 
 # [7] WIFI
 mod_wifi() {
-    wlan=$(iw dev | awk '$1=="Interface"{print $2}'); local wlan
+    local wlan; wlan=$(iw dev | awk '$1=="Interface"{print $2}')
     [[ -z "$wlan" ]] && { log_error "No WiFi card."; return; }
     echo "Interface: $wlan"; read -rp "Confirm? [y/N] " c
     if [[ ! "$c" =~ ^[Yy]$ ]]; then return; fi

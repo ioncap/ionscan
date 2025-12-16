@@ -34,7 +34,7 @@ mod_fast_scan() {
 mod_dns() {
     read -rp "Domain: " d
     dig "$d" ANY +noall +answer
-    ns=$(dig "$d" NS +short | head -n1); local ns
+    local ns; ns=$(dig "$d" NS +short | head -n1)
     if [[ -n "$ns" ]]; then dig "@$ns" "$d" axfr; else log_warning "No NS for AXFR"; fi
     read -rp "Press Enter..."
 }
@@ -63,7 +63,7 @@ mod_snmp() {
 mod_netbios() {
     header; echo -e "${CYAN}[ NETBIOS SCAN ]${NC}"
     get_interface
-    subnet=$(echo "$MY_IP" | cut -d'.' -f1-3); local subnet
+    local subnet; subnet=$(echo "$MY_IP" | cut -d'.' -f1-3)
     log_info "Scanning $subnet.0/24 for NetBIOS names..."
     nbtscan -r "$subnet.0/24"
     read -rp "Press Enter..."

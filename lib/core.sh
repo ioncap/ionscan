@@ -38,7 +38,7 @@ get_config() {
 
 log_raw() {
     local level="$1"; local msg="$2"; local color="$3"
-    ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ"); local ts
+    local ts; ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     if [[ -t 1 ]]; then printf "${color}[%s] %s${NC}\n" "$level" "$msg"; fi
     printf "%s [%s] %s\n" "$ts" "$level" "$msg" >> "$MAIN_LOG"
 }
@@ -100,7 +100,7 @@ open_browser() {
 
 send_webhook() {
     local msg="$1"
-    url=$(get_config WEBHOOK_URL); local url
+    local url; url=$(get_config WEBHOOK_URL)
     if [[ -n "$url" ]]; then
         log_info "Sending Webhook..."
         curl -H "Content-Type: application/json" -d "{\"content\": \"$msg\"}" "$url" >/dev/null 2>&1 || log_warning "Webhook failed."

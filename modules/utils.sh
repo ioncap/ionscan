@@ -9,7 +9,7 @@ mod_mac() { header; get_interface; log_info "Shifting MAC..."; sudo macchanger -
 
 # [5] ARP WATCH
 mod_arp() {
-    header; get_interface; G=$(ip route | grep default | awk '{print $3}' | head -n1); local G
+    header; get_interface; local G; G=$(ip route | grep default | awk '{print $3}' | head -n1)
     if [[ -z "$G" ]]; then log_error "No gateway found."; pause; return; fi
     log_info "Monitoring Gateway: $G (CTRL+C to stop)"
     M1=$(arp -n | grep "$G" | awk '{print $3}')
