@@ -21,6 +21,7 @@ source "$INSTALL_DIR/lib/network.sh"
 # Global variables to manage the shell's state
 CURRENT_MODULE=""
 declare -A MODULE_OPTIONS
+declare -A TARGETS # New: For target management
 
 # --- COMMAND HANDLERS ---
 
@@ -30,8 +31,11 @@ cmd_help() {
     echo "Core Commands:"
     echo "  help              Show this help message"
     echo "  show modules      List all available modules"
-    echo "  use <module>      Select a module to use (e.g., 'use recon/fast_scan')"
     echo "  show options      Show options for the current module"
+    echo "  show targets      Show the current list of targets"
+    echo "  add target <ip>   Add a target to the target list"
+    echo "  rm target <id>    Remove a target from the list"
+    echo "  use <module>      Select a module to use (e.g., 'use recon/fast_scan')"
     echo "  set <key> <val>   Set an option for the current module (e.g., 'set TARGET 192.168.1.1')"
     echo "  run               Run the current module"
     echo "  back              Deselect the current module"
@@ -54,13 +58,14 @@ cmd_show() {
             local modules_dir="$INSTALL_DIR/modules"
             local files; files=$(find "$modules_dir" -type f -name "*.sh" | sort)
             
-            for file in $files; do
+            for file in $files;
+            do
                 local category; category=$(basename "$file" .sh)
-                # Find all mod_* functions in the file
                 local mods; mods=$(grep -oP '(?<=^mod_)[a-zA-Z0-9_]+' "$file")
                 if [[ -n "$mods" ]]; then
                     echo -e "  ${CYAN}${category}${NC}:"
-                    for mod in $mods; do
+                    for mod in $mods;
+                    do
                         echo "    - $category/$mod"
                     done
                 fi
@@ -76,7 +81,7 @@ cmd_show() {
             echo -e "${BOLD}Module Options for: ${RED}${CURRENT_MODULE}${NC}"
             echo "================================================="
             
-            local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//	kinter_/_}"
+            local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\/\/_}"
             options_array_name=${options_array_name^^}
 
             if ! declare -p "$options_array_name" &>/dev/null; then
@@ -84,20 +89,17 @@ cmd_show() {
                 return
             fi
 
-            local keys_str; keys_str=$(eval echo "\
-${!$options_array_name[@]}" )
+            declare -n ref_options_array="$options_array_name"
             
             printf "  %-15s %-15s %-10s %s\n" "Name" "Current Setting" "Required" "Description"
-            printf "  %-15s %-15s %-10s %s\n" "----" "---------------" "--------" "-----------" 
+            printf "  %-15s %-15s %-10s %s\n" "----" "---------------" "--------" "-----------"
             
-            for key in $keys_str;
- do
-                local option_details; option_details=$(eval echo "\
-${$options_array_name[$key]}" )
+            for key in "${!ref_options_array[@]}"; do
+                local option_details="${ref_options_array[$key]}"
                 
-                local description; description=$(echo "$option_details" | grep -o "description='[^']*'" | cut -d'\' -f2)
-                local required; required=$(echo "$option_details" | grep -o "required=[^ ]*" | cut -d'=' -f2)
-                local default_val; default_val=$(echo "$option_details" | grep -o "default='[^']*'" | cut -d'\' -f2)
+                local description; description=$(echo "$option_details" | grep -o "description='[^']*'" | cut -d"'" -f2)
+                local required; required=$(echo "$option_details" | grep -o "required=[^ ]*" | cut -d"=" -f2)
+                local default_val; default_val=$(echo "$option_details" | grep -o "default='[^']*'" | cut -d"'" -f2)
                 
                 local current_val="${MODULE_OPTIONS[$key]:-$default_val}"
                 
@@ -105,9 +107,49 @@ ${$options_array_name[$key]}" )
             done
             echo ""
             ;; 
+        targets)
+            echo -e "${BOLD}Current Targets:${NC}"
+            echo "================"
+            if [[ ${#TARGETS[@]} -eq 0 ]]; then
+                log_info "No targets have been added."
+            else
+                printf "  %-5s %s\n" "ID" "Target"
+                printf "  %-5s %s\n" "---" "------"
+                for id in "${!TARGETS[@]}"; do
+                    printf "  %-5s %s\n" "$id" "${TARGETS[$id]}"
+                done
+            fi
+            echo ""
+            ;; 
         *)
-            log_error "Unknown 'show' command: '$sub_cmd'. Try 'show modules' or 'show options'."
-            ;;    esac
+            log_error "Unknown 'show' command: '$sub_cmd'. Try 'show modules', 'show options', or 'show targets'."
+            ;; 
+    esac
+}
+
+cmd_add_target() {
+    local target_to_add="$1"
+    if [[ -z "$target_to_add" ]]; then
+        log_error "Usage: add target <ip/domain/cidr>"
+        return
+    fi
+    local next_id=$(( ${#TARGETS[@]} + 1 ))
+    TARGETS[$next_id]="$target_to_add"
+    log_success "Added target $next_id: $target_to_add"
+}
+
+cmd_rm_target() {
+    local target_id_to_remove="$1"
+    if [[ -z "$target_id_to_remove" ]]; then
+        log_error "Usage: rm target <id>"
+        return
+    fi
+    if [[ -v "TARGETS[$target_id_to_remove]" ]]; then
+        log_info "Removed target $target_id_to_remove: ${TARGETS[$target_id_to_remove]}"
+        unset "TARGETS[$target_id_to_remove]"
+    else
+        log_error "Invalid target ID: $target_id_to_remove"
+    fi
 }
 
 cmd_use() {
@@ -120,9 +162,7 @@ cmd_use() {
     if [[ -f "$module_path" ]]; then
         source "$module_path"
         
-        # Check if the mod_ function exists
-        if ! command -v "mod_${module_sub_name}" >/dev/null 2>&1;
- then
+        if ! command -v "mod_${module_sub_name}" >/dev/null 2>&1; then
             log_error "Sub-module '$module_sub_name' not found in '$module_category'."
             return
         fi
@@ -131,19 +171,14 @@ cmd_use() {
         MODULE_OPTIONS=() # Clear old options
         log_info "Module '$module_name' loaded."
         
-        # Pre-load default options
-        local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//	kinter_/_}"
+        local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\/\/_}"
         options_array_name=${options_array_name^^}
 
-        if declare -p "$options_array_name" &>/dev/null;
- then
-            local keys_str; keys_str=$(eval echo "\
-${!$options_array_name[@]}" )
-            for key in $keys_str;
- do
-                local option_details; option_details=$(eval echo "\
-${$options_array_name[$key]}" )
-                local default_val; default_val=$(echo "$option_details" | grep -o "default='[^']*'" | cut -d'\' -f2)
+        if declare -p "$options_array_name" &>/dev/null; then
+            declare -n ref_options_array="$options_array_name"
+            for key in "${!ref_options_array[@]}"; do
+                local option_details="${ref_options_array[$key]}"
+                local default_val; default_val=$(echo "$option_details" | grep -o "default='[^']*'" | cut -d"'" -f2)
                 if [[ -n "$default_val" ]]; then
                     MODULE_OPTIONS[$key]="$default_val"
                 fi
@@ -169,24 +204,27 @@ cmd_set() {
     local key="$1"
     local value="$2"
     
+    # Alias RHOSTS to TARGET
+    if [[ "$key" == "RHOSTS" ]]; then
+        key="TARGET"
+    fi
+
     if [[ -z "$CURRENT_MODULE" ]]; then
         log_error "No module loaded. Use 'use <module>' first."
         return
     fi
     
-    local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//	kinter_/_}"
+    local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\/\/_}"
     options_array_name=${options_array_name^^}
     
-    if ! declare -p "$options_array_name" &>/dev/null;
- then
+    if ! declare -p "$options_array_name" &>/dev/null; then
         log_error "Module has no options to set."
         return
     fi
     
-    local keys_str; keys_str=$(eval echo "\
-${!$options_array_name[@]}" )
+    declare -n ref_options_array="$options_array_name"
     
-    if [[ " ${keys_str[*]} " =~ " $key " ]]; then
+    if [[ -v "ref_options_array[$key]" ]]; then
         MODULE_OPTIONS[$key]="$value"
         log_info "$key => $value"
     else
@@ -203,10 +241,25 @@ cmd_run() {
     local module_sub_name; module_sub_name=$(echo "$CURRENT_MODULE" | cut -d'/' -f2)
     local func_to_run="mod_${module_sub_name}"
 
-    if command -v "$func_to_run" >/dev/null 2>&1;
- then
-        # Before running, check for required options
-        # ... (to be implemented)
+    if command -v "$func_to_run" >/dev/null 2>&1; then
+        local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\/\/_}"
+        options_array_name=${options_array_name^^}
+
+        if declare -p "$options_array_name" &>/dev/null; then
+            declare -n ref_options_array="$options_array_name"
+            for key in "${!ref_options_array[@]}"; do
+                local option_details="${ref_options_array[$key]}"
+                local required; required=$(echo "$option_details" | grep -o "required=[^ ]*" | cut -d"=" -f2)
+                
+                if [[ "$required" == "true" ]]; then
+                    if [[ -z "${MODULE_OPTIONS[$key]}" ]]; then
+                        log_error "Required option '$key' for module '$CURRENT_MODULE' is not set."
+                        log_info "Use 'show options' to see available options and 'set $key <value>' to set it."
+                        return
+                    fi
+                fi
+            done
+        fi
         
         log_info "Running module: $CURRENT_MODULE..."
         eval "$func_to_run"
@@ -217,8 +270,7 @@ cmd_run() {
 
 # --- INTERACTIVE SHELL ---
 interactive_shell() {
-    while true;
- do
+    while true; do
         local prompt="ionscan"
         if [[ -n "$CURRENT_MODULE" ]]; then
             prompt="${prompt} (${CURRENT_MODULE})"
@@ -233,34 +285,32 @@ interactive_shell() {
 
         local cmd; read -r cmd args <<< "$line"
 
-        case "$cmd" in
-            help|?)
-                cmd_help
-                ;; 
-            show)
-                cmd_show "$args"
-                ;; 
-            use)
-                cmd_use "$args"
-                ;; 
-            set)
-                local key; local value; read -r key value <<< "$args"
-                cmd_set "$key" "$value"
-                ;; 
-            run)
-                cmd_run
-                ;; 
-            back)
-                cmd_back
-                ;; 
-            exit|quit)
-                cmd_exit
-                ;; 
-            *)
-                log_error "Unknown command: '$cmd'. Type 'help' for a list of commands."
-                ;; 
-        esac
-    done
+        if [[ "$cmd" == "help" || "$cmd" == "?" ]]; then
+            cmd_help
+        elif [[ "$cmd" == "show" ]]; then
+            cmd_show "$args"
+        elif [[ "$cmd" == "add" && "$args" == "target "* ]]; then
+            cmd_add_target "${args#target }"
+        elif [[ "$cmd" == "rm" && "$args" == "target "* ]]; then
+            cmd_rm_target "${args#target }"
+        elif [[ "$cmd" == "use" ]]; then
+            cmd_use "$args"
+        elif [[ "$cmd" == "set" ]]; then
+            local key; local value; read -r key value <<< "$args"
+            cmd_set "$key" "$value"
+        elif [[ "$cmd" == "run" ]]; then
+            cmd_run
+        elif [[ "$cmd" == "back" ]]; then
+            cmd_back
+        elif [[ "$cmd" == "exit" || "$cmd" == "quit" ]]; then
+            cmd_exit
+        elif [[ -z "$cmd" ]]; then
+            # Empty command, do nothing
+            :
+        else
+            log_error "Unknown command: '$cmd'. Type 'help' for a list of commands."
+        fi
+done
 }
 
 
