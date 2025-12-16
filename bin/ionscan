@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
 # ==============================================================================
-#  IONSCAN v22.0 - GIT EDITION
+#  IONSCAN v23.0 - THE FRAMEWORK EDITION
 # ==============================================================================
 #
 #  Main entry point for the IonScan framework.
-#  This script sources libraries and modules, then displays the main menu.
+#  This script sources libraries and modules, then starts the interactive shell.
 #
 # ==============================================================================
 
@@ -17,231 +17,162 @@ source "$INSTALL_DIR/lib/ui.sh"
 source "$INSTALL_DIR/lib/core.sh"
 source "$INSTALL_DIR/lib/network.sh"
 
-# Function to check if a module is enabled
-is_module_enabled() {
+# --- MODULE SOURCING ---
+# We will source modules as they are 'used' in the new interactive shell.
+# This makes the shell start faster and is more dynamic.
+
+# --- STATE VARIABLES ---
+# Global variables to manage the shell's state
+CURRENT_MODULE=""
+declare -A MODULE_OPTIONS
+
+# --- COMMAND HANDLERS ---
+
+cmd_help() {
+    echo -e "${BOLD}IonScan Interactive Shell${NC}"
+    echo "========================="
+    echo "Core Commands:"
+    echo "  help              Show this help message"
+    echo "  show modules      List all available modules"
+    echo "  use <module>      Select a module to use (e.g., 'use recon')"
+    echo "  show options      Show options for the current module"
+    echo "  set <key> <val>   Set an option for the current module (e.g., 'set TARGET 192.168.1.1')"
+    echo "  run               Run the current module"
+    echo "  back              Deselect the current module"
+    echo "  exit              Exit IonScan"
+    echo ""
+}
+
+cmd_exit() {
+    log_info "Exiting IonScan. Goodbye!"
+    exit 0
+}
+
+cmd_show() {
+    local sub_cmd="$1"
+    case "$sub_cmd" in
+        modules)
+            echo -e "${BOLD}Available Modules:${NC}"
+            echo "===================="
+            
+            local modules_dir="$INSTALL_DIR/modules"
+            local files=$(find "$modules_dir" -type f -name "*.sh")
+            
+            # Simple list for now. We can categorize later.
+            for file in $files; do
+                local module_name=$(basename "$file" .sh)
+                echo "  - $module_name"
+            done
+            echo ""
+            ;;
+        options)
+            # To be implemented
+            log_warning "Command 'show options' is not yet implemented."
+            ;;
+        *)
+            log_error "Unknown 'show' command: '$sub_cmd'. Try 'show modules'."
+            ;;
+    esac
+}
+
+cmd_use() {
     local module_name="$1"
-    local setting_name="MODULE_${module_name}_ENABLED"
-    local setting_value=$(get_config "$setting_name")
-    [[ "$setting_value" == "true" ]]
+    local module_path="$INSTALL_DIR/modules/${module_name}.sh"
+
+    if [[ -f "$module_path" ]]; then
+        source "$module_path"
+        
+        case "$module_name" in
+            recon)
+                menu_recon
+                ;;
+            wireless)
+                menu_wireless
+                ;;
+            exploit)
+                menu_exploit
+                ;;
+            utils)
+                menu_utils
+                ;;
+            report)
+                mod_report
+                ;;
+            *)
+                log_error "Module '$module_name' does not have a main menu function."
+                ;;
+        esac
+    else
+        log_error "Module '$module_name' not found."
+    fi
 }
 
-# Conditionally source modules
-if is_module_enabled "RECON"; then
-    source "$INSTALL_DIR/modules/recon.sh"
-fi
-if is_module_enabled "WIRELESS"; then
-    source "$INSTALL_DIR/modules/wireless.sh"
-fi
-if is_module_enabled "EXPLOIT"; then
-    source "$INSTALL_DIR/modules/exploit.sh"
-fi
-if is_module_enabled "UTILS"; then
-    source "$INSTALL_DIR/modules/utils.sh"
-fi
-# Report module is always sourced as it's a core component, but its menu entry can be disabled.
-source "$INSTALL_DIR/modules/report.sh"
 
-
-# --- MENUS ---
-menu_recon() {
+# --- INTERACTIVE SHELL ---
+interactive_shell() {
     while true; do
-        header; echo -e "${CYAN}RECONNAISSANCE${NC}"
-        echo "  [1] Passive Listener (Ghost)"
-        echo "  [2] Fast Port Scan"
-        echo "  [3] DNS Enumerator"
-        echo "  [4] Web Spider"
-        echo "  [5] mDNS Discovery"
-        echo "  [6] SNMP Walker"
-        echo "  [7] NetBIOS Scan"
-        echo "  [0] Back"
-        echo ""; read -rp "recon> " c
-        case $c in
-            1) mod_passive ;; 2) mod_fast_scan ;; 3) mod_dns ;; 4) mod_web ;;
-            5) mod_mdns ;; 6) mod_snmp ;; 7) mod_netbios ;; 0) return ;;
+        # Build the prompt
+        local prompt="${CYAN}ionscan${NC}"
+        # The context-sensitive prompt is removed for now, as 'use' directly enters a menu
+        prompt+=" > "
+
+        # Read user input
+        read -rp "$(echo -e "$prompt")" line
+
+        # Add to history
+        if [[ -n "$line" ]]; then
+            history -s "$line"
+        fi
+
+        # Parse command and arguments
+        local cmd; read -r cmd args <<< "$line"
+
+        # Dispatch command
+        case "$cmd" in
+            help|?)
+                cmd_help
+                ;;
+            show)
+                cmd_show "$args"
+                ;;
+            use)
+                cmd_use "$args"
+                ;;
+            exit|quit)
+                cmd_exit
+                ;;
+            "") # Empty command
+                ;;
+            *)
+                log_error "Unknown command: '$cmd'. Type 'help' for a list of commands."
+                ;;
         esac
     done
 }
 
-menu_wireless() {
-    while true; do
-        header; echo -e "${CYAN}WIRELESS / RF${NC}"
-        echo "  [1] WiFi Monitor"
-        echo "  [2] Bluetooth Scan"
-        echo "  [0] Back"
-        echo ""; read -rp "wireless> " c
-        case $c in
-            1) mod_wifi ;; 2) mod_bt ;; 0) return ;;
-        esac
-    }
-}
-
-menu_exploit() {
-    while true; do
-        header; echo -e "${CYAN}VULN & EXPLOIT${NC}"
-        echo "  [1] Vuln Hunter (Phased)"
-        echo "  [2] Zombie Hunter"
-        echo "  [3] Gatekeeper (Brute)"
-        echo "  [4] Cred Sniffer"
-        echo "  [5] MSF Bridge"
-        echo "  [6] Shell Listener"
-        echo "  [7] Interceptor (MITM)"
-        echo "  [0] Back"
-        echo ""; read -rp "exploit> " c
-        case $c in
-            1) mod_vuln ;; 2) mod_zombie ;; 3) mod_brute ;; 4) mod_sniff ;;
-            5) mod_msf ;; 6) mod_listener ;; 7) mod_intercept ;; 0) return ;;
-        esac
-    done
-}
-
-menu_utils() {
-    while true; do
-        header; echo -e "${CYAN}UTILITIES${NC}"
-        echo "  [1] Identity Shifter"
-        echo "  [2] ARP Watch"
-        echo "  [3] SSL Inspector"
-        echo "  [4] Payload Mule"
-        echo "  [5] Decoy Swarm"
-        echo "  [6] Auto-Scheduler"
-        echo "  [0] Back"
-        echo ""; read -rp "utils> " c
-        case $c in
-            1) mod_mac ;; 2) mod_arp ;; 3) mod_ssl ;; 4) mod_serve ;;
-            5) mod_decoy ;; 6) mod_cron ;; 0) return ;;
-        esac
-    done
-}
 
 # --- MAIN ENTRY ---
 main() {
     setup_config
 
-    local REPORT_OUTPUT_FORMAT="html" # Default output format for main menu calls
-    local SILENT=false # Default to not silent
+    # --- Argument Parsing (getopt) ---
+    # ... This will be re-integrated later ...
 
-    # Argument Parsing with getopt
-    # Short options: a (auto), s (setup), h (help), g (agree), v (silent), o: (output)
-    # Long options: auto, setup, help, agree, silent, output:
-    ARGS=$(getopt -o ashgvo: -l auto,setup,help,agree,silent,output: -- "$@")
-    if [[ $? -ne 0 ]]; then
-        show_help
-        exit 1
-    fi
-    eval set -- "$ARGS"
-
-    while true; do
-        case "$1" in
-            -a|--auto)
-                exec 200>"$LOCK_FILE"; flock -n 200 || exit 1
-                check_deps "silent"; get_interface
-                timeout 30s tcpdump -i "$DEFAULT_IFACE" -n -e "arp or udp port 5353" -w "$LOG_DIR/live_traffic.pcap" 2>/dev/null
-                mod_report "--auto --output=html" # Auto mode always generates HTML report
-                exit 0
-                ;;
-            -s|--setup)
-                run_setup_wizard
-                exit 0 # exit after setup, as it usually involves installs/restarts
-                ;;
-            -h|--help)
-                show_help
-                exit 0
-                ;;
-            -g|--agree)
-                AGREED=true
-                shift
-                ;;
-            -v|--silent) # Corrected short option from 'i' to 'v'
-                SILENT=true
-                shift
-                ;;
-            -o|--output) # Handle output format
-                REPORT_OUTPUT_FORMAT="$2"
-                shift 2
-                ;;
-            --)
-                shift
-                break
-                ;;
-            *)
-                log_error "Unknown option: $1"
-                show_help
-                exit 1
-                ;;
-        esac
-    done
-
-    check_deps
-
-    # Disclaimer
-    if [[ "${AGREED:-}" != "true" ]]; then
-        header
-        echo -e "${RED}${BOLD}DISCLAIMER${NC}"
-        echo "This tool is for educational purposes only."
-        read -rp "Do you agree? [y/N] " A
-        if [[ ! "$A" =~ ^[Yy]$ ]]; then exit 1; fi
+    # If no arguments are given, start the interactive shell
+    if [[ $# -eq 0 ]]; then
+        header # Display header once on start
+        # Disclaimer check
+        if [[ "${AGREED:-}" != "true" ]]; then
+            echo -e "${RED}${BOLD}DISCLAIMER${NC}"
+            echo "This tool is for educational and authorized use only."
+            read -rp "Do you agree? [y/N] " A
+            if [[ ! "$A" =~ ^[Yy]$ ]]; then exit 1; fi
+        fi
+        interactive_shell
     fi
 
-    local menu_option_counter=1
-    while true; do
-        header
-        local menu_choices=()
-        if is_module_enabled "RECON"; then
-            echo -e "  [${menu_option_counter}] Network Reconnaissance"
-            menu_choices+=("$menu_option_counter) menu_recon")
-            ((menu_option_counter++))
-        fi
-        if is_module_enabled "WIRELESS"; then
-            echo -e "  [${menu_option_counter}] Wireless Operations"
-            menu_choices+=("$menu_option_counter) menu_wireless")
-            ((menu_option_counter++))
-        fi
-        if is_module_enabled "EXPLOIT"; then
-            echo -e "  [${menu_option_counter}] Vulnerability & Exploitation"
-            menu_choices+=("$menu_option_counter) menu_exploit")
-            ((menu_option_counter++))
-        fi
-        if is_module_enabled "UTILS"; then
-            echo -e "  [${menu_option_counter}] Utilities"
-            menu_choices+=("$menu_option_counter) menu_utils")
-            ((menu_option_counter++))
-        fi
-        if is_module_enabled "REPORT"; then
-            echo -e "  [${menu_option_counter}] Generate Report"
-            # Pass the selected output format to mod_report
-            # If SILENT is true, don't ask to open in browser
-            local report_args="--output=\"$REPORT_OUTPUT_FORMAT\""
-            if [[ "$SILENT" == "true" ]]; then
-                report_args+=" --auto" # --auto in mod_report prevents browser open and pause
-            fi
-            menu_choices+=("$menu_option_counter) mod_report $report_args")
-            ((menu_option_counter++))
-        fi
-        echo -e "  [0] Exit"
-        echo ""
-        read -rp "ionscan> " c
-
-        local selected_action=""
-        for choice in "${menu_choices[@]}"; do
-            local num="${choice%%)*} "
-            local func="${choice#*)}"
-            if [[ "$num" == "$c" ]]; then
-                selected_action="$func"
-                break
-            fi
-        done
-
-        case "$c" in
-            0) exit 0 ;; 
-            *) 
-                if [[ -n "$selected_action" ]]; then
-                    # Execute the selected action, passing along any required arguments
-                    eval "$selected_action"
-                else
-                    log_warning "Invalid option."
-                fi
-                ;; 
-        esac
-    done
+    # Handle non-interactive command-line arguments (to be re-added)
+    # ...
 }
 
 main "$@"
