@@ -124,6 +124,7 @@ show_help() {
 check_deps() {
     local silent="${1:-}"
     declare -A tools=(
+        ["sqlite3"]="sqlite3"
         ["nmap"]="nmap"
         ["macchanger"]="macchanger"
         ["tcpdump"]="tcpdump"
@@ -165,23 +166,13 @@ check_deps() {
         echo -e "${RED}MISSING:${NC} ${missing[*]}"
         read -rp "Install? [y/N] " c
         if [[ "$c" =~ ^[Yy]$ ]]; then
-            apt-get update && apt-get install -y "${missing[@]}"
-            if [[ " ${missing[*]} " =~ "tshark" ]]; then sudo usermod -aG wireshark "$USER" 2>/dev/null || true; fi
-        else exit 1; fi
+            # This part is not portable, user needs to adapt it to their distro
+            log_warning "Please install the missing packages using your system's package manager."
+        fi
     fi
 }
 
 run_setup_wizard() {
-    echo -e "${BOLD}IONSCAN SETUP${NC}"; read -rp "Install dependencies? [y/N] " P;
-    if [[ ! "$P" =~ ^[Yy]$ ]]; then exit 0; fi
-    sudo apt-get update && sudo apt-get install -y nmap macchanger tcpdump curl aircrack-ng bluez gobuster hydra tshark gawk util-linux netcat-openbsd dsniff dnsutils avahi-utils snmp nbtscan
-    id -u "wireshark" &>/dev/null && sudo usermod -aG wireshark "$USER"
-    if ! command -v msfconsole &> /dev/null;
-        then
-        read -rp "Install Metasploit? [y/N] " M
-        if [[ "$M" =~ ^[Yy]$ ]]; then
-            curl https://raw.githubusercontent.com/rapid7/metasploit-omnibus/master/config/templates/metasploit-framework-wrappers/msfupdate.erb > msfinstall; chmod 755 msfinstall; sudo ./msfinstall; rm msfinstall
-        fi
-    fi
-    echo -e "${GREEN}Done. Restart script.${NC}"; exit 0
+    log_warning "The automatic setup wizard is not supported on this system."
+    log_warning "Please install the required tools manually."
 }

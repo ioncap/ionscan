@@ -16,6 +16,7 @@ INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
 source "$INSTALL_DIR/lib/ui.sh"
 source "$INSTALL_DIR/lib/core.sh"
 source "$INSTALL_DIR/lib/network.sh"
+source "$INSTALL_DIR/lib/database.sh" # New: Database library
 
 # --- STATE VARIABLES ---
 # Global variables to manage the shell's state
@@ -58,8 +59,7 @@ cmd_show() {
             local modules_dir="$INSTALL_DIR/modules"
             local files; files=$(find "$modules_dir" -type f -name "*.sh" | sort)
             
-            for file in $files;
-            do
+            for file in $files; do
                 local category; category=$(basename "$file" .sh)
                 local mods; mods=$(grep -oP '(?<=^mod_)[a-zA-Z0-9_]+' "$file")
                 if [[ -n "$mods" ]]; then
@@ -81,7 +81,7 @@ cmd_show() {
             echo -e "${BOLD}Module Options for: ${RED}${CURRENT_MODULE}${NC}"
             echo "================================================="
             
-            local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\/\/_}"
+            local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//ash/ash}"
             options_array_name=${options_array_name^^}
 
             if ! declare -p "$options_array_name" &>/dev/null; then
@@ -171,7 +171,7 @@ cmd_use() {
         MODULE_OPTIONS=() # Clear old options
         log_info "Module '$module_name' loaded."
         
-        local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\/\/_}"
+        local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//ash/ash}"
         options_array_name=${options_array_name^^}
 
         if declare -p "$options_array_name" &>/dev/null; then
@@ -214,7 +214,7 @@ cmd_set() {
         return
     fi
     
-    local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\/\/_}"
+    local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//ash/ash}"
     options_array_name=${options_array_name^^}
     
     if ! declare -p "$options_array_name" &>/dev/null; then
@@ -242,7 +242,7 @@ cmd_run() {
     local func_to_run="mod_${module_sub_name}"
 
     if command -v "$func_to_run" >/dev/null 2>&1; then
-        local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\/\/_}"
+        local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//ash/ash}"
         options_array_name=${options_array_name^^}
 
         if declare -p "$options_array_name" &>/dev/null; then
@@ -317,6 +317,7 @@ done
 # --- MAIN ENTRY ---
 main() {
     setup_config
+    db_init # Initialize the database at the start
 
     if [[ $# -eq 0 ]]; then
         header # Display header once on start
