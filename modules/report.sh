@@ -4,6 +4,13 @@
 #  REPORTING MODULE
 # ==============================================================================
 
+# Reporting Module Options
+
+# Options for mod_report
+declare -gA MOD_OPTIONS_REPORT_REPORT
+MOD_OPTIONS_REPORT_REPORT[FORMAT]="description='Output format (html or json)' required=false default='html'"
+MOD_OPTIONS_REPORT_REPORT[AUTO_OPEN]="description='Automatically open HTML report in browser' required=false default='false'"
+
 mod_report() {
     local _output_format="html" # Default output format
     local _auto_open=false

@@ -4,6 +4,19 @@
 #  WIRELESS MODULES
 # ==============================================================================
 
+# Wireless Modules Options
+# Each sub-module (mod_*) can have its own options.
+# Options are defined as associative arrays.
+# Key format: MOD_OPTIONS_<MODULE_CATEGORY>_<MODULE_NAME>
+# Value format: "description='...' required=<true/false> default='...'"
+
+# Options for mod_wifi
+declare -gA MOD_OPTIONS_WIRELESS_WIFI
+MOD_OPTIONS_WIRELESS_WIFI[INTERFACE]="description='Wireless interface for monitoring' required=true default='$DEFAULT_IFACE'"
+
+# Options for mod_bt
+# No specific options needed for mod_bt beyond the default behavior.
+
 # [7] WIFI
 mod_wifi() {
     local wlan; wlan=$(iw dev | awk '$1=="Interface"{print $2}')

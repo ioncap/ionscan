@@ -4,6 +4,35 @@
 #  RECONNAISSANCE MODULES
 # ==============================================================================
 
+# Reconnaissance Modules Options
+# Each sub-module (mod_*) can have its own options.
+# Options are defined as associative arrays.
+# Key format: MOD_OPTIONS_<MODULE_CATEGORY>_<MODULE_NAME>
+# Value format: "description='...' required=<true/false> default='...'"
+
+# Options for mod_passive
+declare -gA MOD_OPTIONS_RECON_PASSIVE
+MOD_OPTIONS_RECON_PASSIVE[INTERFACE]="description='Network interface to listen on' required=true default='$DEFAULT_IFACE'"
+MOD_OPTIONS_RECON_PASSIVE[DURATION]="description='Duration to listen in seconds' required=false default='30'"
+
+# Options for mod_fast_scan
+declare -gA MOD_OPTIONS_RECON_FAST_SCAN
+MOD_OPTIONS_RECON_FAST_SCAN[TARGET]="description='Target IP or CIDR' required=true"
+
+# Options for mod_dns
+declare -gA MOD_OPTIONS_RECON_DNS
+MOD_OPTIONS_RECON_DNS[DOMAIN]="description='Domain to query' required=true"
+
+# Options for mod_snmp
+declare -gA MOD_OPTIONS_RECON_SNMP
+MOD_OPTIONS_RECON_SNMP[TARGET]="description='Target IP' required=true"
+MOD_OPTIONS_RECON_SNMP[COMMUNITY]="description='SNMP Community string' required=false default='public'"
+
+# Options for mod_web
+declare -gA MOD_OPTIONS_RECON_WEB
+MOD_OPTIONS_RECON_WEB[TARGET]="description='Target IP or Hostname' required=true"
+MOD_OPTIONS_RECON_WEB[WORDLIST]="description='Path to wordlist for gobuster' required=false default='$LOG_DIR/common.txt'"
+
 # [1] GHOST WITNESS
 mod_passive() {
     get_interface
@@ -22,12 +51,18 @@ mod_passive() {
 
 # [18] FAST SCAN
 mod_fast_scan() {
-    read -rp "Target IP/CIDR (b=back): " t
-    if [[ "$t" == "b" ]]; then return; fi
-    validate_ip "$t" || { log_error "Invalid IP"; return; }
-    log_success "Fast Scan on $t..."
-    nmap -F -T4 -n "$t"
-    read -rp "Press Enter..."
+    local target="${MODULE_OPTIONS[TARGET]}"
+    
+    if [[ -z "$target" ]]; then
+        log_error "Required option 'TARGET' not set. Use 'set TARGET <ip>'."
+        return
+    fi
+    
+    validate_ip "$target" || { log_error "Invalid IP in TARGET option."; return; }
+    
+    log_success "Fast Scan on $target..."
+    nmap -F -T4 -n "$target"
+    log_info "Scan complete."
 }
 
 # [19] DNS

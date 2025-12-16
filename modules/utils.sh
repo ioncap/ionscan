@@ -4,6 +4,26 @@
 #  UTILITY MODULES
 # ==============================================================================
 
+# Utility Modules Options
+
+# Options for mod_mac
+declare -gA MOD_OPTIONS_UTILS_MAC
+MOD_OPTIONS_UTILS_MAC[INTERFACE]="description='Interface to change MAC address on' required=true default='$DEFAULT_IFACE'"
+
+# Options for mod_ssl
+declare -gA MOD_OPTIONS_UTILS_SSL
+MOD_OPTIONS_UTILS_SSL[TARGET]="description='Target IP' required=true"
+MOD_OPTIONS_UTILS_SSL[PORT]="description='Port to check SSL on' required=false default='443'"
+
+# Options for mod_serve
+declare -gA MOD_OPTIONS_UTILS_SERVE
+MOD_OPTIONS_UTILS_SERVE[PORT]="description='Port to serve files on' required=false default='8080'"
+
+# Options for mod_decoy
+declare -gA MOD_OPTIONS_UTILS_DECOY
+MOD_OPTIONS_UTILS_DECOY[TARGET]="description='Target IP for decoy scan' required=true"
+MOD_OPTIONS_UTILS_DECOY[DECOYS]="description='Number of decoys to use' required=false default='10'"
+
 # [4] MAC
 mod_mac() { header; get_interface; log_info "Shifting MAC..."; sudo macchanger -r "$DEFAULT_IFACE"; pause; }
 
