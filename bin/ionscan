@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+
+# ==============================================================================
+#  IONSCAN v22.0 - GIT EDITION
+# ==============================================================================
+#
+#  Main entry point for the IonScan framework.
+#  This script sources libraries and modules, then displays the main menu.
+#
+# ==============================================================================
+
+# --- SOURCE FRAMEWORK ---
+INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
+
+# Libraries
+source "$INSTALL_DIR/lib/ui.sh"
+source "$INSTALL_DIR/lib/core.sh"
+source "$INSTALL_DIR/lib/network.sh"
+
+# Modules
+source "$INSTALL_DIR/modules/recon.sh"
+source "$INSTALL_DIR/modules/wireless.sh"
+source "$INSTALL_DIR/modules/exploit.sh"
+source "$INSTALL_DIR/modules/utils.sh"
+source "$INSTALL_DIR/modules/report.sh"
+
+
+# --- MENUS ---
+menu_recon() {
+    while true; do
+        header; echo -e "${CYAN}RECONNAISSANCE${NC}"
+        echo "  [1] Passive Listener (Ghost)"
+        echo "  [2] Fast Port Scan"
+        echo "  [3] DNS Enumerator"
+        echo "  [4] Web Spider"
+        echo "  [5] mDNS Discovery"
+        echo "  [6] SNMP Walker"
+        echo "  [7] NetBIOS Scan"
+        echo "  [0] Back"
+        echo ""; read -p "recon> " c
+        case $c in
+            1) mod_passive ;; 2) mod_fast_scan ;; 3) mod_dns ;; 4) mod_web ;;
+            5) mod_mdns ;; 6) mod_snmp ;; 7) mod_netbios ;; 0) return ;;
+        esac
+    done
+}
+
+menu_wireless() {
+    while true; do
+        header; echo -e "${CYAN}WIRELESS / RF${NC}"
+        echo "  [1] WiFi Monitor"
+        echo "  [2] Bluetooth Scan"
+        echo "  [0] Back"
+        echo ""; read -p "wireless> " c
+        case $c in
+            1) mod_wifi ;; 2) mod_bt ;; 0) return ;;
+        esac
+    done
+}
+
+menu_exploit() {
+    while true; do
+        header; echo -e "${CYAN}VULN & EXPLOIT${NC}"
+        echo "  [1] Vuln Hunter (Phased)"
+        echo "  [2] Zombie Hunter"
+        echo "  [3] Gatekeeper (Brute)"
+        echo "  [4] Cred Sniffer"
+        echo "  [5] MSF Bridge"
+        echo "  [6] Shell Listener"
+        echo "  [7] Interceptor (MITM)"
+        echo "  [0] Back"
+        echo ""; read -p "exploit> " c
+        case $c in
+            1) mod_vuln ;; 2) mod_zombie ;; 3) mod_brute ;; 4) mod_sniff ;;
+            5) mod_msf ;; 6) mod_listener ;; 7) mod_intercept ;; 0) return ;;
+        esac
+    done
+}
+
+menu_utils() {
+    while true; do
+        header; echo -e "${CYAN}UTILITIES${NC}"
+        echo "  [1] Identity Shifter"
+        echo "  [2] ARP Watch"
+        echo "  [3] SSL Inspector"
+        echo "  [4] Payload Mule"
+        echo "  [5] Decoy Swarm"
+        echo "  [6] Auto-Scheduler"
+        echo "  [0] Back"
+        echo ""; read -p "utils> " c
+        case $c in
+            1) mod_mac ;; 2) mod_arp ;; 3) mod_ssl ;; 4) mod_serve ;;
+            5) mod_decoy ;; 6) mod_cron ;; 0) return ;;
+        esac
+    done
+}
+
+# --- MAIN ENTRY ---
+main() {
+    setup_config
+
+    # Parse Args
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --auto)
+                exec 200>"$LOCK_FILE"; flock -n 200 || exit 1
+                check_deps "silent"; get_interface
+                timeout 30s tcpdump -i "$DEFAULT_IFACE" -n -e "arp or udp port 5353" -w "$LOG_DIR/live_traffic.pcap" 2>/dev/null
+                mod_report "--auto"
+                exit 0 ;;
+            --setup) run_setup_wizard ;;
+            --help) show_help ;;
+            --agree) AGREED=true ;;
+            --silent) SILENT=true ;;
+            *) echo "Unknown option: $1"; exit 1 ;;
+        esac
+        shift
+    done
+
+    check_deps
+
+    # Disclaimer
+    if [[ "${AGREED:-}" != "true" ]]; then
+        header
+        echo -e "${RED}${BOLD}DISCLAIMER${NC}"
+        echo "This tool is for educational purposes only."
+        read -p "Do you agree? [y/N] " A
+        if [[ ! "$A" =~ ^[Yy]$ ]]; then exit 1; fi
+    fi
+
+    while true; do
+        header
+        echo -e "  [1] Network Reconnaissance"
+        echo -e "  [2] Wireless Operations"
+        echo -e "  [3] Vulnerability & Exploitation"
+        echo -e "  [4] Utilities"
+        echo -e "  [5] Generate Report"
+        echo -e "  [0] Exit"
+        echo ""
+        read -p "ionscan> " c
+        case $c in
+            1) menu_recon ;; 2) menu_wireless ;; 3) menu_exploit ;;
+            4) menu_utils ;; 5) mod_report ;; 0) exit 0 ;;
+        esac
+    done
+}
+
+main "$@"

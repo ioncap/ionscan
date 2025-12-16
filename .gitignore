@@ -1,0 +1,19 @@
+# Log files
+ionscan_logs/
+*.log
+*.pcap
+
+# Temporary files
+*.tmp
+*.lock
+
+# Config files (if they contain secrets)
+# ionscan.conf
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS generated files
+.DS_Store
+Thumbs.db
