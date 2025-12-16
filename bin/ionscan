@@ -72,7 +72,7 @@ menu_wireless() {
         case $c in
             1) mod_wifi ;; 2) mod_bt ;; 0) return ;;
         esac
-    done
+    }
 }
 
 menu_exploit() {
@@ -116,22 +116,51 @@ menu_utils() {
 main() {
     setup_config
 
-    # Parse Args
-    while [[ $# -gt 0 ]]; do
+    # Argument Parsing with getopt
+    # Short options: a (auto), s (setup), h (help), g (agree), i (silent)
+    # Long options: auto, setup, help, agree, silent
+    ARGS=$(getopt -o ashi -l auto,setup,help,agree,silent -- "$@")
+    if [[ $? -ne 0 ]]; then
+        show_help
+        exit 1
+    fi
+    eval set -- "$ARGS"
+
+    while true; do
         case "$1" in
-            --auto)
+            -a|--auto)
                 exec 200>"$LOCK_FILE"; flock -n 200 || exit 1
                 check_deps "silent"; get_interface
                 timeout 30s tcpdump -i "$DEFAULT_IFACE" -n -e "arp or udp port 5353" -w "$LOG_DIR/live_traffic.pcap" 2>/dev/null
                 mod_report "--auto"
-                exit 0 ;;
-            --setup) run_setup_wizard ;;
-            --help) show_help ;;
-            --agree) AGREED=true ;;
-            --silent) SILENT=true ;;
-            *) echo "Unknown option: $1"; exit 1 ;;
+                exit 0
+                ;;
+            -s|--setup)
+                run_setup_wizard
+                exit 0 # exit after setup, as it usually involves installs/restarts
+                ;;
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -g|--agree)
+                AGREED=true
+                shift
+                ;;
+            -i|--silent)
+                SILENT=true
+                shift
+                ;;
+            --)
+                shift
+                break
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_help
+                exit 1
+                ;;
         esac
-        shift
     done
 
     check_deps
