@@ -17,11 +17,28 @@ source "$INSTALL_DIR/lib/ui.sh"
 source "$INSTALL_DIR/lib/core.sh"
 source "$INSTALL_DIR/lib/network.sh"
 
-# Modules
-source "$INSTALL_DIR/modules/recon.sh"
-source "$INSTALL_DIR/modules/wireless.sh"
-source "$INSTALL_DIR/modules/exploit.sh"
-source "$INSTALL_DIR/modules/utils.sh"
+# Function to check if a module is enabled
+is_module_enabled() {
+    local module_name="$1"
+    local setting_name="MODULE_${module_name}_ENABLED"
+    local setting_value=$(get_config "$setting_name")
+    [[ "$setting_value" == "true" ]]
+}
+
+# Conditionally source modules
+if is_module_enabled "RECON"; then
+    source "$INSTALL_DIR/modules/recon.sh"
+fi
+if is_module_enabled "WIRELESS"; then
+    source "$INSTALL_DIR/modules/wireless.sh"
+fi
+if is_module_enabled "EXPLOIT"; then
+    source "$INSTALL_DIR/modules/exploit.sh"
+fi
+if is_module_enabled "UTILS"; then
+    source "$INSTALL_DIR/modules/utils.sh"
+fi
+# Report module is always sourced as it's a core component, but its menu entry can be disabled.
 source "$INSTALL_DIR/modules/report.sh"
 
 
@@ -37,7 +54,7 @@ menu_recon() {
         echo "  [6] SNMP Walker"
         echo "  [7] NetBIOS Scan"
         echo "  [0] Back"
-        echo ""; read -p "recon> " c
+        echo ""; read -rp "recon> " c
         case $c in
             1) mod_passive ;; 2) mod_fast_scan ;; 3) mod_dns ;; 4) mod_web ;;
             5) mod_mdns ;; 6) mod_snmp ;; 7) mod_netbios ;; 0) return ;;
@@ -51,7 +68,7 @@ menu_wireless() {
         echo "  [1] WiFi Monitor"
         echo "  [2] Bluetooth Scan"
         echo "  [0] Back"
-        echo ""; read -p "wireless> " c
+        echo ""; read -rp "wireless> " c
         case $c in
             1) mod_wifi ;; 2) mod_bt ;; 0) return ;;
         esac
@@ -69,7 +86,7 @@ menu_exploit() {
         echo "  [6] Shell Listener"
         echo "  [7] Interceptor (MITM)"
         echo "  [0] Back"
-        echo ""; read -p "exploit> " c
+        echo ""; read -rp "exploit> " c
         case $c in
             1) mod_vuln ;; 2) mod_zombie ;; 3) mod_brute ;; 4) mod_sniff ;;
             5) mod_msf ;; 6) mod_listener ;; 7) mod_intercept ;; 0) return ;;
@@ -87,7 +104,7 @@ menu_utils() {
         echo "  [5] Decoy Swarm"
         echo "  [6] Auto-Scheduler"
         echo "  [0] Back"
-        echo ""; read -p "utils> " c
+        echo ""; read -rp "utils> " c
         case $c in
             1) mod_mac ;; 2) mod_arp ;; 3) mod_ssl ;; 4) mod_serve ;;
             5) mod_decoy ;; 6) mod_cron ;; 0) return ;;
@@ -124,23 +141,62 @@ main() {
         header
         echo -e "${RED}${BOLD}DISCLAIMER${NC}"
         echo "This tool is for educational purposes only."
-        read -p "Do you agree? [y/N] " A
+        read -rp "Do you agree? [y/N] " A
         if [[ ! "$A" =~ ^[Yy]$ ]]; then exit 1; fi
     fi
 
+    local menu_option_counter=1
     while true; do
         header
-        echo -e "  [1] Network Reconnaissance"
-        echo -e "  [2] Wireless Operations"
-        echo -e "  [3] Vulnerability & Exploitation"
-        echo -e "  [4] Utilities"
-        echo -e "  [5] Generate Report"
+        local menu_choices=()
+        if is_module_enabled "RECON"; then
+            echo -e "  [${menu_option_counter}] Network Reconnaissance"
+            menu_choices+=("$menu_option_counter) menu_recon")
+            ((menu_option_counter++))
+        fi
+        if is_module_enabled "WIRELESS"; then
+            echo -e "  [${menu_option_counter}] Wireless Operations"
+            menu_choices+=("$menu_option_counter) menu_wireless")
+            ((menu_option_counter++))
+        fi
+        if is_module_enabled "EXPLOIT"; then
+            echo -e "  [${menu_option_counter}] Vulnerability & Exploitation"
+            menu_choices+=("$menu_option_counter) menu_exploit")
+            ((menu_option_counter++))
+        fi
+        if is_module_enabled "UTILS"; then
+            echo -e "  [${menu_option_counter}] Utilities"
+            menu_choices+=("$menu_option_counter) menu_utils")
+            ((menu_option_counter++))
+        fi
+        if is_module_enabled "REPORT"; then
+            echo -e "  [${menu_option_counter}] Generate Report"
+            menu_choices+=("$menu_option_counter) mod_report")
+            ((menu_option_counter++))
+        fi
         echo -e "  [0] Exit"
         echo ""
-        read -p "ionscan> " c
-        case $c in
-            1) menu_recon ;; 2) menu_wireless ;; 3) menu_exploit ;;
-            4) menu_utils ;; 5) mod_report ;; 0) exit 0 ;;
+        read -rp "ionscan> " c
+
+        local selected_action=""
+        for choice in "${menu_choices[@]}"; do
+            local num="${choice%%)*}"
+            local func="${choice#*)}"
+            if [[ "$num" == "$c" ]]; then
+                selected_action="$func"
+                break
+            fi
+        done
+
+        case "$c" in
+            0) exit 0 ;;
+            *)
+                if [[ -n "$selected_action" ]]; then
+                    $selected_action
+                else
+                    log_warning "Invalid option."
+                fi
+                ;;
         esac
     done
 }
