@@ -1,93 +1,73 @@
 #!/usr/bin/env python3
+import sys
+import os
+import sqlite3
+import json
 
-import sys, glob, re, os, subprocess
-import xml.etree.ElementTree as ET
-import json # Added json import
+def get_data_from_db(db_path):
+    """Fetches and structures data from the SQLite database."""
+    inventory = {}
+    if not os.path.exists(db_path):
+        return inventory
 
-LOG_DIR = os.environ.get("LOG_DIR", ".")
-OUI_DB = os.environ.get("OUI_DB", "oui.txt")
-PCAP_FILE = os.path.join(LOG_DIR, "live_traffic.pcap")
-PUB_IP, GATEWAY, DNS_SRV, MY_IP, IFACE = os.environ.get("PUB_IP","?"), os.environ.get("GATEWAY","?"), os.environ.get("DNS_SRV","?"), os.environ.get("MY_IP","?"), os.environ.get("DEFAULT_IFACE","?")
-inventory = {}
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
 
-def get_vendor(mac_addr):
-    if not os.path.exists(OUI_DB): return "Unknown"
-    clean = mac_addr.replace(":", "").upper()[:6]
-    try:
-        with open(OUI_DB, "r", encoding='utf-8', errors='ignore') as f:
-            for line in f:
-                if line.startswith(clean):
-                    parts = line.split("\t")
-                    if len(parts) >= 2:
-                        return parts[1].strip()
-    except Exception:
-        pass
-    return "Unknown"
+    # Fetch hosts
+    cursor.execute("SELECT * FROM hosts ORDER BY last_seen DESC")
+    hosts = cursor.fetchall()
 
-# --- Data Collection Logic (same as before) ---
-if os.path.exists(PCAP_FILE):
-    cmd = f"tcpdump -nn -e -r {PCAP_FILE} 2>/dev/null | grep -oE '([0-9a-fA-F]{{2}}:){{5}}[0-9a-fA-F]{{2}}' | sort | uniq"
-    try:
-        macs = subprocess.check_output(cmd, shell=True).decode().splitlines()
-        for mac in macs:
-            m = mac.upper()
-            if m.startswith("FF:FF") or m.startswith("01:00") or m.startswith("33:33"): continue
-            ip = subprocess.check_output(f"arp -n | grep -i {m} | awk '{{print $1}}'", shell=True).decode().strip() or "Unknown IP"
-            inventory[ip] = { "mac": m, "vendor": get_vendor(m), "vulns": [], "max_score": 0.0 }
-    except Exception:
-        pass
+    for host in hosts:
+        host_id = host['id']
+        ip_address = host['ip_address']
+        inventory[ip_address] = {
+            "mac": host['mac_address'],
+            "vendor": host['vendor'],
+            "vulns": [],
+            "max_score": 0.0
+        }
 
-cve_pat = re.compile(r"(CVE-\d{4}-\d+)") # Corrected from re.re.compile
-for xml_file in glob.glob(os.path.join(LOG_DIR, "vuln_report_*.xml")):
-    try:
-        root = ET.parse(xml_file).getroot()
-        for host in root.findall("host"):
-            addr = host.find("address[@addrtype='ipv4']")
-            if addr is None: continue
-            ip = addr.get("addr")
-            if ip not in inventory: inventory[ip] = { "mac": "-", "vendor": "Scanned", "vulns": [], "max_score": 0.0 }
-            for port in host.findall(".//port"):
-                pid = port.get("portid")
-                svc_elem = port.find("service")
-                svc = svc_elem.get("name") if svc_elem is not None else "tcp"
-                for script in port.findall("script"):
-                    if script.get("id") == "vulners":
-                        for table in script.findall("table"):
-                            for row in table.findall("table"):
-                                id_nd = row.find("elem[@key='id']")
-                                cv_nd = row.find("elem[@key='cvss']")
-                                if id_nd is not None:
-                                    rid = id_nd.text
-                                    score = float(cv_nd.text) if cv_nd is not None and cv_nd.text is not None else 0.0
-                                    match = cve_pat.search(rid)
-                                    did = match.group(1) if match else rid
-                                    if not any(v['id'] == did for v in inventory[ip]['vulns']):
-                                        inventory[ip]['vulns'].append({'id':did, 'score':score, 'port':pid, 'svc':svc})
-                                        if score > inventory[ip]['max_score']: inventory[ip]['max_score'] = score
-    except Exception:
-        continue
+        # Fetch ports for this host
+        cursor.execute("SELECT * FROM ports WHERE host_id = ?", (host_id,))
+        ports = cursor.fetchall()
+        
+        for port in ports:
+            port_id = port['id']
+            # We can add port info to the inventory if needed, but for now, we just need vulnerabilities
+            
+            # Fetch vulnerabilities for this port
+            cursor.execute("SELECT * FROM vulnerabilities WHERE port_id = ?", (port_id,))
+            vulns = cursor.fetchall()
+            
+            for vuln in vulns:
+                vuln_data = {
+                    'id': vuln['cve_id'],
+                    'score': vuln['cvss_score'],
+                    'port': port['port_number'],
+                    'svc': port['service_name']
+                }
+                inventory[ip_address]['vulns'].append(vuln_data)
+                if vuln['cvss_score'] > inventory[ip_address]['max_score']:
+                    inventory[ip_address]['max_score'] = vuln['cvss_score']
 
-web_data = {}
-for wlog in glob.glob(os.path.join(LOG_DIR, "web_scan_*.txt")):
-    try:
-        target = os.path.basename(wlog).replace("web_scan_", "").replace(".txt", "")
-        with open(wlog, "r") as f: lines = [l.strip() for l in f if l.strip()]
-        if lines: web_data[target] = lines
-    except Exception:
-        pass
-# --- End Data Collection Logic ---
+    conn.close()
+    return inventory
 
-def generate_html_report(inventory_data, web_surface_data):
-    # This function now encapsulates the HTML generation logic
-    # It receives inventory and web_data as arguments
+def generate_html_report(inventory_data):
+    # This function now receives inventory from the database
     html_output = ""
 
     # Network Scope Card
-    html_output += f"<div class=\"card\" style=\"border-top:4px solid var(--purple);"><details open><summary style=\"cursor:pointer\"><h2 style=\"display:inline;font-size:1.2rem\">Network Scope</h2><span style=\"float:right;color:#94a3b8\">▼</span></summary><div style=\"margin-top:15px;display:grid;gap:10px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));\">
-    <div><div class=\"stat-lbl\">Public IP</div><div style=\"font-family:monospace\">{PUB_IP}</div></div>
-    <div><div class=\"stat-lbl\">Sensor IP</div><div style=\"font-family:monospace\">{MY_IP}</div></div>
-    <div><div class=\"stat-lbl\">Gateway</div><div style=\"font-family:monospace\">{GATEWAY}</div></div>
-    </div></details></div>"
+    PUB_IP = os.environ.get("PUB_IP","?")
+    MY_IP = os.environ.get("MY_IP","?")
+    GATEWAY = os.environ.get("GATEWAY","?")
+    
+    html_output += f"""<div class="card" style="border-top:4px solid var(--purple);"><details open><summary style="cursor:pointer"><h2 style="display:inline;font-size:1.2rem">Network Scope</h2><span style="float:right;color:#94a3b8">▼</span></summary><div style="margin-top:15px;display:grid;gap:10px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));">
+    <div><div class="stat-lbl">Public IP</div><div style="font-family:monospace">{PUB_IP}</div></div>
+    <div><div class="stat-lbl">Sensor IP</div><div style="font-family:monospace">{MY_IP}</div></div>
+    <div><div class="stat-lbl">Gateway</div><div style="font-family:monospace">{GATEWAY}</div></div>
+    </div></details></div>"""
 
     # Asset Inventory Table
     html_output += '<div class="card"><table><thead><tr><th style="width:30px"></th><th>Asset</th><th>Risk</th><th>Findings</th></tr></thead><tbody>'
@@ -108,26 +88,17 @@ def generate_html_report(inventory_data, web_surface_data):
             html_output += "<tr><td style='color:#22c55e'>No vulnerabilities found.</td></tr>"
         html_output += '</table></td></tr>'
     html_output += '</tbody></table></div>'
-
-    # Web Surface Analysis Card
-    if web_surface_data:
-        html_output += '<div class="card" style="border-top:4px solid #f59e0b"><h2>🌐 Web Surface Analysis</h2><table><thead><tr><th>Target Host</th><th>Discovered Paths</th></tr></thead><tbody>'
-        for target, paths in web_surface_data.items():
-            path_html = "<br>".join([p.replace("Status:","<span style='color:#38bdf8'>Status:</span>") for p in paths])
-            html_output += f'<tr><td style="vertical-align:top"><strong>http://{target}</strong></td><td style="font-family:monospace;font-size:0.85rem">{path_html}</td></tr>'
-        html_output += '</tbody></table></div>'
     
     return html_output
 
-def export_json_report(inventory_data, web_surface_data):
+def export_json_report(inventory_data):
     report_data = {
         "network_scope": {
-            "public_ip": PUB_IP,
-            "sensor_ip": MY_IP,
-            "gateway": GATEWAY
+            "public_ip": os.environ.get("PUB_IP","?"),
+            "sensor_ip": os.environ.get("MY_IP","?"),
+            "gateway": os.environ.get("GATEWAY","?")
         },
-        "asset_inventory": [],
-        "web_surface_analysis": []
+        "asset_inventory": []
     }
 
     sorted_inventory = sorted(inventory_data.items(), key=lambda item: sum(v['score'] for v in item[1]['vulns']), reverse=True)
@@ -147,19 +118,19 @@ def export_json_report(inventory_data, web_surface_data):
                 "service": v["svc"]
             })
         report_data["asset_inventory"].append(asset)
-
-    if web_surface_data:
-        for target, paths in web_surface_data.items():
-            report_data["web_surface_analysis"].append({
-                "target_host": f"http://{target}",
-                "discovered_paths": paths
-            })
             
     print(json.dumps(report_data, indent=4))
 
 # --- Main execution logic ---
 if __name__ == "__main__":
+    db_path = os.environ.get("DB_FILE")
+    if not db_path:
+        print("Error: DB_FILE environment variable is not set.", file=sys.stderr)
+        sys.exit(1)
+        
+    inventory_data = get_data_from_db(db_path)
+
     if "--json" in sys.argv:
-        export_json_report(inventory, web_data)
+        export_json_report(inventory_data)
     else:
-        print(generate_html_report(inventory, web_data))
+        print(generate_html_report(inventory_data))

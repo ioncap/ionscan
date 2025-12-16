@@ -46,16 +46,26 @@ mod_passive() {
 
     log_success "Listening on $interface for $duration seconds..."
     local cap="$LOG_DIR/live_traffic.pcap"
+    rm -f "$cap" # Remove old capture
     tcpdump -i "$interface" -n -e "arp or udp port 5353" -w "$cap" 2>/dev/null & BG_PID=$!
     for i in $(seq 1 "$duration"); do printf "\rScanning... %d%%" $((i*100/duration)); sleep 1; done; kill "$BG_PID" 2>/dev/null; echo ""
-    tcpdump -nn -e -r "$cap" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | sort | uniq | while read -r mac;
- do
-        mac=$(echo "$mac" | tr '[:lower:]' '[:upper:]')
-        if [[ "$mac" =~ ^(FF:FF|01:00|33:33) ]]; then continue; fi
-        ip=$(arp -n | grep -i "$mac" | awk '{print $1}')
-        printf " %-16s %-18s %s\n" "${ip:--}" "$mac" "$(get_vendor "$mac" | cut -c1-25)"
+    
+    log_info "Parsing captured traffic..."
+    # Extract arp requests to get IP-MAC mappings
+    tcpdump -ennr "$cap" arp 2>/dev/null | while read -r line; do
+        if [[ "$line" =~ "who-has" ]]; then
+            local ip; ip=$(echo "$line" | grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | head -n1)
+            local mac; mac=$(echo "$line" | awk '{print $2}')
+            mac=${mac%,} # remove trailing comma
+            
+            if [[ -n "$ip" && -n "$mac" ]]; then
+                local vendor; vendor=$(get_vendor "$mac")
+                db_add_or_get_host "$ip" "$mac" "$vendor"
+            fi
+        fi
     done
-    log_info "Passive scan complete."
+    
+    log_info "Passive scan complete. Data stored in database."
 }
 
 # [18] FAST SCAN
@@ -84,9 +94,15 @@ mod_fast_scan() {
         targets_param="$target"
     fi
     
-    log_success "Fast Scan on targets..."
-    nmap -F -T4 -n "$targets_param"
-    log_info "Scan complete."
+    log_success "Starting fast scan on targets..."
+    
+    # Export DB_FILE for the parser to use
+    export DB_FILE
+
+    # Run nmap and pipe to the parser
+    nmap -F -T4 -n -oX - "$targets_param" | python3 "$INSTALL_DIR/parsers/nmap_fast_scan_parser.py"
+
+    log_info "Fast scan complete. Data stored in database."
 }
 
 # [19] DNS
