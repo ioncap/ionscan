@@ -12,7 +12,7 @@ MOD_OPTIONS_UTILS_MAC[INTERFACE]="description='Interface to change MAC address o
 
 # Options for mod_ssl
 declare -gA MOD_OPTIONS_UTILS_SSL
-MOD_OPTIONS_UTILS_SSL[TARGET]="description='Target IP' required=true"
+MOD_OPTIONS_UTILS_SSL[TARGET]="description='Target IP or "all"' required=true"
 MOD_OPTIONS_UTILS_SSL[PORT]="description='Port to check SSL on' required=false default='443'"
 
 # Options for mod_serve
@@ -21,7 +21,7 @@ MOD_OPTIONS_UTILS_SERVE[PORT]="description='Port to serve files on' required=fal
 
 # Options for mod_decoy
 declare -gA MOD_OPTIONS_UTILS_DECOY
-MOD_OPTIONS_UTILS_DECOY[TARGET]="description='Target IP for decoy scan' required=true"
+MOD_OPTIONS_UTILS_DECOY[TARGET]="description='Target IP or "all"' required=true"
 MOD_OPTIONS_UTILS_DECOY[DECOYS]="description='Number of decoys to use' required=false default='10'"
 
 # Options for mod_cron
@@ -66,12 +66,29 @@ mod_ssl() {
     local port="${MODULE_OPTIONS[PORT]}"
 
     if [[ -z "$target" ]]; then
-        log_error "Required option 'TARGET' not set. Use 'set TARGET <ip>'."
+        log_error "Required option 'TARGET' not set. Use 'set TARGET <ip/all>'."
         return
     fi
     
-    log_info "Checking SSL on $target:$port..."
-    nmap -sV -p "$port" --script ssl-enum-ciphers,ssl-cert "$target"
+    local targets_to_scan=()
+    if [[ "$target" == "all" ]]; then
+        if [[ ${#TARGETS[@]} -eq 0 ]]; then
+            log_error "TARGET is set to 'all' but the target list is empty. Use 'add target <ip>'."
+            return
+        fi
+        log_info "Scanning all targets in the target list..."
+        for t in "${TARGETS[@]}"; do
+            targets_to_scan+=("$t")
+        done
+    else
+        validate_ip "$target" || { log_error "Invalid IP for TARGET option."; return; }
+        targets_to_scan+=("$target")
+    fi
+
+    for t in "${targets_to_scan[@]}"; do
+        log_info "Checking SSL on $t:$port..."
+        nmap -sV -p "$port" --script ssl-enum-ciphers,ssl-cert "$t"
+    done
     log_info "SSL inspection complete."
 }
 
@@ -95,12 +112,29 @@ mod_decoy() {
     local decoys="${MODULE_OPTIONS[DECOYS]}"
 
     if [[ -z "$target" ]]; then
-        log_error "Required option 'TARGET' not set. Use 'set TARGET <ip>'."
+        log_error "Required option 'TARGET' not set. Use 'set TARGET <ip/all>'."
         return
     fi
     
-    log_info "Swarming $target with $decoys decoys..."
-    sudo nmap -D RND:"$decoys" -sS --top-ports 50 "$target"
+    local targets_to_scan=()
+    if [[ "$target" == "all" ]]; then
+        if [[ ${#TARGETS[@]} -eq 0 ]]; then
+            log_error "TARGET is set to 'all' but the target list is empty. Use 'add target <ip>'."
+            return
+        fi
+        log_info "Scanning all targets in the target list..."
+        for t in "${TARGETS[@]}"; do
+            targets_to_scan+=("$t")
+        done
+    else
+        validate_ip "$target" || { log_error "Invalid IP for TARGET option."; return; }
+        targets_to_scan+=("$target")
+    fi
+
+    for t in "${targets_to_scan[@]}"; do
+        log_info "Swarming $t with $decoys decoys..."
+        sudo nmap -D RND:"$decoys" -sS --top-ports 50 "$t"
+    done
     log_info "Decoy scan complete."
 }
 
