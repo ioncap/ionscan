@@ -25,30 +25,21 @@ mod_report() {
 
     log_info "Generating report (format: $_output_format)..."
 
-    local python_args=""
     if [[ "$_output_format" == "json" ]]; then
-        python_args="--json"
-    fi
-
-    local report_output=$(python3 "$INSTALL_DIR/modules/report.py" $python_args)
-
-    if [[ "$_output_format" == "json" ]]; then
-        echo "$report_output"
+        python3 "$INSTALL_DIR/modules/report.py" --json
         log_success "JSON report generated to stdout."
-        # No webhook or browser open for JSON to stdout
     else # HTML output
         local report_file="$LOG_DIR/dashboard.html"
         local template_file="$INSTALL_DIR/templates/dashboard.html"
-
-        # Assemble the final report
-        sed "s|__DATE__|$(date)|" "$template_file" | sed "/<!-- REPORT_CONTENT -->/r /dev/stdin" <<< "$report_output" > "$report_file"
+        
+        python3 "$INSTALL_DIR/modules/report.py" "$template_file" "$report_file"
 
         log_success "Generated: $report_file"
 
         # Send Webhook
         local HOSTS=0
         if [[ -f "$LOG_DIR/live_traffic.pcap" ]]; then
-            HOSTS=$(tcpdump -nn -e -r "$LOG_DIR/live_traffic.pcap" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | sort -u | wc -l)
+            HOSTS=$(sudo tcpdump -nn -e -r "$LOG_DIR/live_traffic.pcap" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | sort -u | wc -l)
         fi
         send_webhook "Report generated. $HOSTS active hosts found."
 

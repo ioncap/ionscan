@@ -3,6 +3,7 @@ import sys
 import os
 import sqlite3
 import json
+from datetime import datetime
 
 def get_data_from_db(db_path):
     """Fetches and structures data from the SQLite database."""
@@ -54,10 +55,37 @@ def get_data_from_db(db_path):
     conn.close()
     return inventory
 
-def generate_html_report(inventory_data):
-    # This function now receives inventory from the database
-    html_output = ""
+def generate_html_report(inventory_data, template_path, output_path):
+    # --- Chart Data Generation ---
+    risk_distribution = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "None": 0}
+    vuln_counts = {}
+    for ip, data in inventory_data.items():
+        score = data['max_score']
+        if score >= 9.0:
+            risk_distribution["Critical"] += 1
+        elif score >= 7.0:
+            risk_distribution["High"] += 1
+        elif score >= 4.0:
+            risk_distribution["Medium"] += 1
+        elif score > 0:
+            risk_distribution["Low"] += 1
+        else:
+            risk_distribution["None"] += 1
 
+        for vuln in data['vulns']:
+            vuln_id = vuln['id']
+            vuln_counts[vuln_id] = vuln_counts.get(vuln_id, 0) + 1
+
+    top_vulnerabilities = dict(sorted(vuln_counts.items(), key=lambda item: item[1], reverse=True)[:5])
+
+    chart_data = {
+        "risk_distribution": risk_distribution,
+        "top_vulnerabilities": top_vulnerabilities,
+    }
+    chart_data_json = json.dumps(chart_data)
+
+    # --- HTML Content Generation ---
+    html_output = ""
     # Network Scope Card
     PUB_IP = os.environ.get("PUB_IP","?")
     MY_IP = os.environ.get("MY_IP","?")
@@ -72,12 +100,12 @@ def generate_html_report(inventory_data):
     # Asset Inventory Table
     html_output += '<div class="card"><table><thead><tr><th style="width:30px"></th><th>Asset</th><th>Risk</th><th>Findings</th></tr></thead><tbody>'
     rid = 0
-    sorted_inventory = sorted(inventory_data.items(), key=lambda item: sum(v['score'] for v in item[1]['vulns']), reverse=True)
+    sorted_inventory = sorted(inventory_data.items(), key=lambda item: item[1]['max_score'], reverse=True)
 
     for ip, data in sorted_inventory:
         rid += 1; cnt = len(data['vulns']); score = data['max_score']
-        risk = "CRITICAL" if score >= 9 else "HIGH" if score >= 7 else "MEDIUM" if score >= 4 else "LOW"
-        cls = "risk-high" if score >= 7 else "risk-low"
+        risk = "CRITICAL" if score >= 9 else "HIGH" if score >= 7 else "MEDIUM" if score >= 4 else "LOW" if score > 0 else "NONE"
+        cls = "risk-high" if score >= 7 else "risk-medium" if score >=4 else "risk-low"
         html_output += f'<tr onclick="toggle({rid}, this)" style="cursor:pointer"><td>▶</td><td><strong>{ip}</strong><div style="font-size:0.8rem;opacity:0.7">{data["vendor"]}</div></td><td><span class="badge {cls}">{risk}</span></td><td>{cnt}</td></tr>'
         html_output += f'<tr id="row-{rid}" class="details-row"><td colspan="4" style="padding:0 20px 20px 50px"><table style="background:#0f172a;border-radius:8px">'
         if cnt > 0:
@@ -88,8 +116,17 @@ def generate_html_report(inventory_data):
             html_output += "<tr><td style='color:#22c55e'>No vulnerabilities found.</td></tr>"
         html_output += '</table></td></tr>'
     html_output += '</tbody></table></div>'
-    
-    return html_output
+
+    # --- Final Assembly ---
+    with open(template_path, 'r') as f:
+        template = f.read()
+
+    final_html = template.replace('__DATE__', datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    final_html = final_html.replace('__CHART_DATA__', chart_data_json)
+    final_html = final_html.replace('<!-- REPORT_CONTENT -->', html_output)
+
+    with open(output_path, 'w') as f:
+        f.write(final_html)
 
 def export_json_report(inventory_data):
     report_data = {
@@ -132,5 +169,11 @@ if __name__ == "__main__":
 
     if "--json" in sys.argv:
         export_json_report(inventory_data)
+    elif len(sys.argv) == 3:
+        template_path = sys.argv[1]
+        output_path = sys.argv[2]
+        generate_html_report(inventory_data, template_path, output_path)
     else:
-        print(generate_html_report(inventory_data))
+        print("Usage: report.py <template_path> <output_path> or report.py --json", file=sys.stderr)
+        sys.exit(1)
+

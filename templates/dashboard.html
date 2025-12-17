@@ -1,18 +1,80 @@
 <!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>IonScan Report</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
 :root{--bg:#0f172a;--card:#1e293b;--border:#334155;--text:#f1f5f9;--accent:#38bdf8;--danger:#ef4444;--warning:#eab308;--success:#22c55e;--purple:#a855f7}
 body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;margin:0;padding:20px}
 .container{max-width:1200px;margin:0 auto}
-header{border-bottom:1px solid var(--border);padding-bottom:20px;margin-bottom:30px}h1{color:var(--accent);margin:0}
-.card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:20px;margin-bottom:20px;overflow-x:auto}
-.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:20px;text-align:center}
-.stat-val{font-size:1.5rem;font-weight:bold;margin-top:5px}.stat-lbl{font-size:0.8rem;color:#94a3b8;text-transform:uppercase}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;margin-bottom:20px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:20px;overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:0.9rem}th{text-align:left;color:#94a3b8;padding:10px;border-bottom:1px solid var(--border)}
-td{padding:10px;border-bottom:1px solid var(--border)}tr:hover{background:#263344}
-.badge{padding:2px 8px;border-radius:12px;font-size:0.75rem;font-weight:700}.risk-high{color:var(--danger);background:rgba(239,68,68,0.1)}
 .expanded{background:#263344;border-left:3px solid var(--accent)}.details-row{display:none;background:#0f172a}
 a{color:var(--accent);text-decoration:none}
 </style></head><body><div class="container"><header><h1>IONSCAN Enterprise</h1><p>Generated: __DATE__</p></header>
+<div class="stat-grid">
+    <div class="card">
+        <h2 style="font-size:1.2rem;margin-top:0">Risk Distribution</h2>
+        <canvas id="risk-distribution"></canvas>
+    </div>
+    <div class="card">
+        <h2 style="font-size:1.2rem;margin-top:0">Top 5 Vulnerabilities</h2>
+        <canvas id="top-vulnerabilities"></canvas>
+    </div>
+</div>
 <!-- REPORT_CONTENT -->
-<script>function toggle(id,el){var r=document.getElementById('row-'+id);if(r.style.display==='table-row'){r.style.display='none';el.classList.remove('expanded')}else{r.style.display='table-row';el.classList.add('expanded')}}</script></body></html>
+<script>
+function toggle(id,el){var r=document.getElementById('row-'+id);if(r.style.display==='table-row'){r.style.display='none';el.classList.remove('expanded')}else{r.style.display='table-row';el.classList.add('expanded')}}
+
+const chartData = __CHART_DATA__;
+
+// Risk Distribution Chart
+const riskCtx = document.getElementById('risk-distribution').getContext('2d');
+new Chart(riskCtx, {
+    type: 'doughnut',
+    data: {
+        labels: Object.keys(chartData.risk_distribution),
+        datasets: [{
+            data: Object.values(chartData.risk_distribution),
+            backgroundColor: ['#ef4444', '#eab308', '#22c55e', '#38bdf8'],
+            borderColor: 'var(--card)',
+            borderWidth: 4
+        }]
+    },
+    options: {
+        responsive: true,
+        plugins: {
+            legend: {
+                position: 'right',
+                labels: { color: 'var(--text)' }
+            }
+        }
+    }
+});
+
+// Top Vulnerabilities Chart
+const vulnCtx = document.getElementById('top-vulnerabilities').getContext('2d');
+new Chart(vulnCtx, {
+    type: 'bar',
+    data: {
+        labels: Object.keys(chartData.top_vulnerabilities),
+        datasets: [{
+            label: 'Count',
+            data: Object.values(chartData.top_vulnerabilities),
+            backgroundColor: '#a855f7',
+            borderColor: '#a855f7',
+            borderWidth: 1
+        }]
+    },
+    options: {
+        indexAxis: 'y',
+        responsive: true,
+        plugins: {
+            legend: { display: false }
+        },
+        scales: {
+            x: { ticks: { color: 'var(--text)' }, grid: { color: 'var(--border)' } },
+            y: { ticks: { color: 'var(--text)' }, grid: { color: 'var(--border)' } }
+        }
+    }
+});
+</script></body></html>
