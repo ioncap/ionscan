@@ -21,6 +21,7 @@ mod_report() {
     GATEWAY=$(ip route | grep default | awk '{print $3}' | head -n1); export GATEWAY
     DNS_SRV=$(grep "nameserver" /etc/resolv.conf | awk '{print $2}' | head -n1); export DNS_SRV
     export MY_IP DEFAULT_IFACE # These are already set in lib/core.sh or network.sh
+    export DB_FILE # Export DB_FILE for the python script
 
     log_info "Generating report (format: $_output_format)..."
 
