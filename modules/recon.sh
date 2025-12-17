@@ -97,7 +97,9 @@ mod_fast_scan() {
             return
         fi
         log_info "Scanning all targets in the target list..."
-        sudo nmap -F -T4 -n --stats-every 10s -oX - -iL <(printf '%s\n' "${TARGETS[@]}") | python3 "$INSTALL_DIR/parsers/nmap_fast_scan_parser.py"
+        > "$TMP_TARGETS"
+        printf '%s\n' "${TARGETS[@]}" > "$TMP_TARGETS"
+        sudo nmap -F -T4 -n --stats-every 10s -oX - -iL "$TMP_TARGETS" | python3 "$INSTALL_DIR/parsers/nmap_fast_scan_parser.py"
     else
         validate_ip "$target" || { log_error "Invalid IP for TARGET option."; return; }
         sudo nmap -F -T4 -n --stats-every 10s -oX - "$target" | python3 "$INSTALL_DIR/parsers/nmap_fast_scan_parser.py"
