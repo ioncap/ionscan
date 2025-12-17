@@ -22,6 +22,9 @@ tbody tr:hover{background-color:#2c3a4f}
 .risk-medium{color:#1e293b;background:var(--risk-medium)}
 .risk-low{color:#1e293b;background:var(--risk-low)}
 .risk-none{color:#1e293b;background:var(--risk-none)}
+.filter-toolbar{display:flex;gap:10px;margin-bottom:20px;align-items:center}
+.filter-toolbar input{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-family:'Inter'}
+.filter-toolbar .badge{cursor:pointer}
 .expanded{background:#263344;border-left:3px solid var(--accent)}.details-row{display:none;background:#0f172a}
 a{color:var(--accent);text-decoration:none}
 </style></head><body><div class="container"><header><h1>IONSCAN Enterprise</h1><p>Generated: __DATE__</p></header>
@@ -37,58 +40,118 @@ a{color:var(--accent);text-decoration:none}
 </div>
 <!-- REPORT_CONTENT -->
 <script>
+class Dashboard {
+    constructor(chartData) {
+        this.chartData = chartData;
+        this.assetRows = document.querySelectorAll('#asset-table tbody tr.asset-row');
+        this.init();
+    }
+
+    init() {
+        this.createRiskDistributionChart();
+        this.createTopVulnerabilitiesChart();
+        this.setupFilters();
+    }
+
+    createRiskDistributionChart() {
+        const riskCtx = document.getElementById('risk-distribution').getContext('2d');
+        this.riskChart = new Chart(riskCtx, {
+            type: 'doughnut',
+            data: {
+                labels: this.chartData.risk_distribution.map(d => d.label),
+                datasets: [{
+                    data: this.chartData.risk_distribution.map(d => d.count),
+                    backgroundColor: this.chartData.risk_distribution.map(d => d.color),
+                    borderColor: 'var(--card)',
+                    borderWidth: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: { position: 'right', labels: { color: 'var(--text)' } }
+                },
+                onClick: (evt, elements) => {
+                    if (elements.length > 0) {
+                        const clickedIndex = elements[0].index;
+                        const riskLevel = this.riskChart.data.labels[clickedIndex];
+                        this.filterByRisk(riskLevel);
+                    }
+                }
+            }
+        });
+    }
+
+    createTopVulnerabilitiesChart() {
+        const vulnCtx = document.getElementById('top-vulnerabilities').getContext('2d');
+        new Chart(vulnCtx, {
+            type: 'bar',
+            data: {
+                labels: Object.keys(this.chartData.top_vulnerabilities),
+                datasets: [{
+                    label: 'Count',
+                    data: Object.values(this.chartData.top_vulnerabilities),
+                    backgroundColor: '#a855f7',
+                }]
+            },
+            options: {
+                indexAxis: 'y',
+                responsive: true,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { ticks: { color: 'var(--text)' }, grid: { color: 'var(--border)' } },
+                    y: { ticks: { color: 'var(--text)' }, grid: { color: 'var(--border)' } }
+                }
+            }
+        });
+    }
+
+    setupFilters() {
+        const searchInput = document.getElementById('search-input');
+        searchInput.addEventListener('keyup', () => this.filterAssets());
+
+        const riskFilters = document.querySelectorAll('.risk-filter');
+        riskFilters.forEach(filter => {
+            filter.addEventListener('click', () => {
+                const riskLevel = filter.dataset.risk;
+                this.filterByRisk(riskLevel);
+            });
+        });
+    }
+    
+    filterByRisk(riskLevel) {
+        document.querySelectorAll('.risk-filter').forEach(b => b.style.opacity = '0.5');
+        const activeFilter = document.querySelector(`.risk-filter[data-risk="${riskLevel}"]`);
+        if (activeFilter) activeFilter.style.opacity = '1';
+        
+        this.assetRows.forEach(row => {
+            const rowRisk = row.dataset.risk;
+            if (riskLevel === 'All' || rowRisk === riskLevel) {
+                row.style.display = '';
+            } else {
+                row.style.display = 'none';
+            }
+        });
+    }
+
+    filterAssets() {
+        const searchTerm = document.getElementById('search-input').value.toLowerCase();
+        this.assetRows.forEach(row => {
+            const assetIp = row.querySelector('strong').textContent.toLowerCase();
+            const vendor = row.querySelector('div').textContent.toLowerCase();
+            if (assetIp.includes(searchTerm) || vendor.includes(searchTerm)) {
+                row.style.display = '';
+            } else {
+                row.style.display = 'none';
+            }
+        });
+    }
+}
+
 function toggle(id,el){var r=document.getElementById('row-'+id);if(r.style.display==='table-row'){r.style.display='none';el.classList.remove('expanded')}else{r.style.display='table-row';el.classList.add('expanded')}}
 
-const chartData = __CHART_DATA__;
-
-// Risk Distribution Chart
-const riskCtx = document.getElementById('risk-distribution').getContext('2d');
-new Chart(riskCtx, {
-    type: 'doughnut',
-    data: {
-        labels: chartData.risk_distribution.map(d => d.label),
-        datasets: [{
-            data: chartData.risk_distribution.map(d => d.count),
-            backgroundColor: chartData.risk_distribution.map(d => d.color),
-            borderColor: 'var(--card)',
-            borderWidth: 4
-        }]
-    },
-    options: {
-        responsive: true,
-        plugins: {
-            legend: {
-                position: 'right',
-                labels: { color: 'var(--text)' }
-            }
-        }
-    }
-});
-
-// Top Vulnerabilities Chart
-const vulnCtx = document.getElementById('top-vulnerabilities').getContext('2d');
-new Chart(vulnCtx, {
-    type: 'bar',
-    data: {
-        labels: Object.keys(chartData.top_vulnerabilities),
-        datasets: [{
-            label: 'Count',
-            data: Object.values(chartData.top_vulnerabilities),
-            backgroundColor: '#a855f7',
-            borderColor: '#a855f7',
-            borderWidth: 1
-        }]
-    },
-    options: {
-        indexAxis: 'y',
-        responsive: true,
-        plugins: {
-            legend: { display: false }
-        },
-        scales: {
-            x: { ticks: { color: 'var(--text)' }, grid: { color: 'var(--border)' } },
-            y: { ticks: { color: 'var(--text)' }, grid: { color: 'var(--border)' } }
-        }
-    }
+document.addEventListener('DOMContentLoaded', () => {
+    const chartData = __CHART_DATA__;
+    new Dashboard(chartData);
 });
 </script></body></html>

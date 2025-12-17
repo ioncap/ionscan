@@ -25,6 +25,8 @@ def get_data_from_db(db_path):
         inventory[ip_address] = {
             "mac": host['mac_address'],
             "vendor": host['vendor'],
+            "first_seen": host['first_seen'],
+            "last_seen": host['last_seen'],
             "vulns": [],
             "max_score": 0.0
         }
@@ -104,7 +106,14 @@ def generate_html_report(inventory_data, template_path, output_path):
     </div></details></div>"""
 
     # Asset Inventory Table
-    html_output += '<div class="card"><table><thead><tr><th style="width:30px"></th><th>Asset</th><th>Risk</th><th>Findings</th></tr></thead><tbody>'
+    html_output += '<div class="card" id="asset-table">'
+    html_output += '<div class="filter-toolbar"><input type="text" id="search-input" placeholder="Search IP or Vendor..."><div class="risk-filters">'
+    html_output += '<span class="badge risk-filter" data-risk="All" style="opacity:1">All</span>'
+    for r in risk_data:
+        html_output += f'<span class="badge risk-{r.lower()} risk-filter" data-risk="{r}">{r}</span>'
+    html_output += '</div></div>'
+
+    html_output += '<table><thead><tr><th style="width:30px"></th><th>Asset</th><th>Risk</th><th>Findings</th><th>First Seen</th><th>Last Seen</th></tr></thead><tbody>'
     rid = 0
     sorted_inventory = sorted(inventory_data.items(), key=lambda item: item[1]['max_score'], reverse=True)
 
@@ -121,11 +130,11 @@ def generate_html_report(inventory_data, template_path, output_path):
         else:
             risk, cls = "NONE", "risk-none"
 
-        html_output += f'<tr onclick="toggle({rid}, this)" style="cursor:pointer"><td>▶</td><td><strong>{ip}</strong><div style="font-size:0.8rem;opacity:0.7">{data["vendor"]}</div></td><td><span class="badge {cls}">{risk}</span></td><td>{cnt}</td></tr>'
-        html_output += f'<tr id="row-{rid}" class="details-row"><td colspan="4" style="padding:0 20px 20px 50px"><table style="background:#0f172a;border-radius:8px">'
+        html_output += f'<tr class="asset-row" data-risk="{risk}" onclick="toggle({rid}, this)" style="cursor:pointer"><td>▶</td><td><strong>{ip}</strong><div style="font-size:0.8rem;opacity:0.7">{data["vendor"]}</div></td><td><span class="badge {cls}">{risk}</span></td><td>{cnt}</td><td>{data["first_seen"]}</td><td>{data["last_seen"]}</td></tr>'
+        html_output += f'<tr id="row-{rid}" class="details-row"><td colspan="6" style="padding:0 20px 20px 50px"><table style="background:#0f172a;border-radius:8px">'
         if cnt > 0:
             for v in sorted(data['vulns'], key=lambda x: x['score'], reverse=True):
-                score_color = risk_data["Critical"]["color"] if v['score'] >= 9.0 else risk_data["High"]["color"] if v['score'] >= 7.0 else risk_data["Medium"]["color"] if v['score'] >= 4.0 else risk_data["Low"]["color"]
+                score_color = "#ef4444" if v['score'] >= 9.0 else "#f97316" if v['score'] >= 7.0 else "#eab308" if v['score'] >= 4.0 else "#22c55e"
                 html_output += f'<tr><td><a href="https://nvd.nist.gov/vuln/detail/{v["id"]}" target="_blank">{v["id"]}</a></td><td>{v["svc"]}/{v["port"]}</td><td style="color:{score_color}">{v["score"]}</td></tr>'
         else:
             html_output += "<tr><td style='color:#22c55e'>No vulnerabilities found.</td></tr>"
