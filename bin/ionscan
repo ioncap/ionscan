@@ -426,8 +426,14 @@ main() {
     set -- "${remaining_args[@]}"
 
     if [[ "$auto_run" == "true" ]]; then
-        # If --auto is passed, prepend the auto-run commands
-        set -- "use" "recon/passive" "run" "use" "report/report" "set" "AUTO_OPEN" "true" "run" "$@"
+        # If --auto is passed, prepend a comprehensive scan sequence.
+        get_interface # Sets MY_IP
+        local local_subnet
+        local_subnet=$(echo "$MY_IP" | cut -d'.' -f1-3).0/24
+        set -- "add" "target" "$local_subnet" \
+               "use" "recon/fast_scan" "set" "TARGET" "all" "run" \
+               "use" "exploit/vuln" "set" "TARGET" "all" "run" \
+               "use" "report/report" "set" "AUTO_OPEN" "true" "run" "$@"
     fi
 
     setup_config
