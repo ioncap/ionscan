@@ -57,29 +57,35 @@ def get_data_from_db(db_path):
 
 def generate_html_report(inventory_data, template_path, output_path):
     # --- Chart Data Generation ---
-    risk_distribution = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "None": 0}
+    risk_data = {
+        "Critical": {"count": 0, "color": "#ef4444"},
+        "High": {"count": 0, "color": "#f97316"},
+        "Medium": {"count": 0, "color": "#eab308"},
+        "Low": {"count": 0, "color": "#22c55e"},
+        "None": {"count": 0, "color": "#38bdf8"}
+    }
     vuln_counts = {}
     for ip, data in inventory_data.items():
         score = data['max_score']
         if score >= 9.0:
-            risk_distribution["Critical"] += 1
+            risk_data["Critical"]["count"] += 1
         elif score >= 7.0:
-            risk_distribution["High"] += 1
+            risk_data["High"]["count"] += 1
         elif score >= 4.0:
-            risk_distribution["Medium"] += 1
+            risk_data["Medium"]["count"] += 1
         elif score > 0:
-            risk_distribution["Low"] += 1
+            risk_data["Low"]["count"] += 1
         else:
-            risk_distribution["None"] += 1
+            risk_data["None"]["count"] += 1
 
         for vuln in data['vulns']:
             vuln_id = vuln['id']
             vuln_counts[vuln_id] = vuln_counts.get(vuln_id, 0) + 1
-
+    
     top_vulnerabilities = dict(sorted(vuln_counts.items(), key=lambda item: item[1], reverse=True)[:5])
 
     chart_data = {
-        "risk_distribution": risk_distribution,
+        "risk_distribution": [{"label": k, **v} for k, v in risk_data.items()],
         "top_vulnerabilities": top_vulnerabilities,
     }
     chart_data_json = json.dumps(chart_data)
@@ -104,13 +110,22 @@ def generate_html_report(inventory_data, template_path, output_path):
 
     for ip, data in sorted_inventory:
         rid += 1; cnt = len(data['vulns']); score = data['max_score']
-        risk = "CRITICAL" if score >= 9 else "HIGH" if score >= 7 else "MEDIUM" if score >= 4 else "LOW" if score > 0 else "NONE"
-        cls = "risk-high" if score >= 7 else "risk-medium" if score >=4 else "risk-low"
+        if score >= 9.0:
+            risk, cls = "CRITICAL", "risk-critical"
+        elif score >= 7.0:
+            risk, cls = "HIGH", "risk-high"
+        elif score >= 4.0:
+            risk, cls = "MEDIUM", "risk-medium"
+        elif score > 0:
+            risk, cls = "LOW", "risk-low"
+        else:
+            risk, cls = "NONE", "risk-none"
+
         html_output += f'<tr onclick="toggle({rid}, this)" style="cursor:pointer"><td>▶</td><td><strong>{ip}</strong><div style="font-size:0.8rem;opacity:0.7">{data["vendor"]}</div></td><td><span class="badge {cls}">{risk}</span></td><td>{cnt}</td></tr>'
         html_output += f'<tr id="row-{rid}" class="details-row"><td colspan="4" style="padding:0 20px 20px 50px"><table style="background:#0f172a;border-radius:8px">'
         if cnt > 0:
             for v in sorted(data['vulns'], key=lambda x: x['score'], reverse=True):
-                score_color = "#ef4444" if v['score'] >= 7 else "#eab308" if v['score'] >= 4 else "#22c55e"
+                score_color = risk_data["Critical"]["color"] if v['score'] >= 9.0 else risk_data["High"]["color"] if v['score'] >= 7.0 else risk_data["Medium"]["color"] if v['score'] >= 4.0 else risk_data["Low"]["color"]
                 html_output += f'<tr><td><a href="https://nvd.nist.gov/vuln/detail/{v["id"]}" target="_blank">{v["id"]}</a></td><td>{v["svc"]}/{v["port"]}</td><td style="color:{score_color}">{v["score"]}</td></tr>'
         else:
             html_output += "<tr><td style='color:#22c55e'>No vulnerabilities found.</td></tr>"
