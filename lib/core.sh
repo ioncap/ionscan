@@ -5,11 +5,6 @@ set -u              # Error on unset variables
 set -o pipefail     # Fail if pipe fails
 shopt -s nocasematch
 
-# Auto-Escalate to Root safely at start
-if [[ $EUID -ne 0 ]]; then
-   exec sudo "$0" "$@"
-fi
-
 # Constants & Paths
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
 LOG_DIR="$INSTALL_DIR/ionscan_logs"
@@ -58,19 +53,19 @@ cleanup() {
 
     # Kill Spoofing PIDs
     if [[ -n "${SPOOF_PID1:-}" ]] && kill -0 "$SPOOF_PID1" 2>/dev/null;
-        then kill "$SPOOF_PID1" 2>/dev/null;
+        then sudo kill "$SPOOF_PID1" 2>/dev/null;
     fi
     if [[ -n "${SPOOF_PID2:-}" ]] && kill -0 "$SPOOF_PID2" 2>/dev/null;
-        then kill "$SPOOF_PID2" 2>/dev/null;
+        then sudo kill "$SPOOF_PID2" 2>/dev/null;
     fi
 
     # Reset IP Forwarding
-    if [[ -f /proc/sys/net/ipv4/ip_forward ]]; then echo 0 > /proc/sys/net/ipv4/ip_forward; fi
+    if [[ -f /proc/sys/net/ipv4/ip_forward ]]; then echo 0 | sudo tee /proc/sys/net/ipv4/ip_forward > /dev/null; fi
 
     # Restore Wifi
     if [[ -n "${MON_IFACE:-}" ]]; then
-        airmon-ng stop "$MON_IFACE" >/dev/null 2>&1
-        service NetworkManager start 2>/dev/null
+        sudo airmon-ng stop "$MON_IFACE" >/dev/null 2>&1
+        sudo service NetworkManager start 2>/dev/null
     fi
     tput cnorm 2>/dev/null || true
 }
@@ -109,7 +104,7 @@ send_webhook() {
 
 show_help() {
     echo -e "${BOLD}IonScan v22.0 (Git Edition) - Usage:${NC}"
-    echo "  sudo ionscan [OPTIONS]"
+    echo "  ionscan [OPTIONS]"
     echo ""
     echo "Options:"
     echo "  --auto       Run in headless mode (Passive Scan + Report)"

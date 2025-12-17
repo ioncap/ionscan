@@ -19,6 +19,14 @@ MOD_OPTIONS_WIRELESS_WIFI[INTERFACE]="description='Wireless interface for monito
 
 # [7] WIFI
 mod_wifi() {
+    if ! command -v airmon-ng &> /dev/null; then
+        log_error "airmon-ng is not installed. Please install aircrack-ng suite."
+        return
+    fi
+    if ! command -v airodump-ng &> /dev/null; then
+        log_error "airodump-ng is not installed. Please install aircrack-ng suite."
+        return
+    fi
     local interface="${MODULE_OPTIONS[INTERFACE]}"
 
     if [[ -z "$interface" ]]; then
@@ -31,13 +39,13 @@ mod_wifi() {
     # The original code's `[[ -z "$wlan" ]]` check should be replaced by option validation earlier.
     # For now, I'll keep it simple and assume the interface is valid from the option.
 
-    airmon-ng check kill >/dev/null 2>&1
-    airmon-ng start "$interface" >/dev/null
+    sudo airmon-ng check kill >/dev/null 2>&1
+    sudo airmon-ng start "$interface" >/dev/null
     MON_IFACE=$(iw dev | awk '$1=="Interface" && $2~"mon"{print $2}' | head -n1)
     if [[ -z "$MON_IFACE" ]]; then MON_IFACE=$interface; fi
     
     log_success "Monitoring on $MON_IFACE (CTRL+C stop)"
-    airodump-ng "$MON_IFACE"
+    sudo airodump-ng "$MON_IFACE"
     cleanup # Cleanup is handled by trap EXIT in core.sh, but calling explicitly here for immediate effect
     log_info "WiFi monitoring complete."
 }
@@ -54,7 +62,7 @@ mod_bt() {
     
     log_info "Scanning for Bluetooth devices..."
     sudo hciconfig hci0 down && sudo hciconfig hci0 up
-    hcitool scan > bt.txt; sudo timeout 10s hcitool lescan 2>/dev/null | sudo tee -a bt.txt || true
+    sudo hcitool scan > bt.txt; sudo timeout 10s hcitool lescan 2>/dev/null | sudo tee -a bt.txt || true
     cat bt.txt
     rm bt.txt
     log_info "Bluetooth scan complete."

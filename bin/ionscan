@@ -19,12 +19,17 @@ source "$INSTALL_DIR/lib/network.sh"
 source "$INSTALL_DIR/lib/database.sh" # New: Database library
 
 # --- STATE VARIABLES ---
-# Global variables to manage the shell's state
+# Global variables are used to manage the state of the interactive shell.
+# CURRENT_MODULE: The path of the currently loaded module (e.g., recon/fast_scan).
+# MODULE_OPTIONS: An associative array holding the key-value pairs for the current module's options.
+# TARGETS: An associative array storing the list of targets for scanning.
 CURRENT_MODULE=""
 declare -A MODULE_OPTIONS
 declare -A TARGETS # New: For target management
 
 # --- COMMAND HANDLERS ---
+# Each 'cmd_*' function is responsible for handling a specific command entered
+# by the user in the interactive shell.
 
 cmd_help() {
     echo -e "${BOLD}IonScan Interactive Shell${NC}"
@@ -81,7 +86,7 @@ cmd_show() {
             echo -e "${BOLD}Module Options for: ${RED}${CURRENT_MODULE}${NC}"
             echo "================================================="
             
-            local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//ash/ash}"
+            local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\//_}"
             options_array_name=${options_array_name^^}
 
             if ! declare -p "$options_array_name" &>/dev/null; then
@@ -128,25 +133,27 @@ cmd_show() {
 }
 
 cmd_add_target() {
-    local target_to_add="$1"
+    local -n targets_ref="$1" # Nameref to the global TARGETS array
+    local target_to_add="$2"
     if [[ -z "$target_to_add" ]]; then
         log_error "Usage: add target <ip/domain/cidr>"
         return
     fi
-    local next_id=$(( ${#TARGETS[@]} + 1 ))
-    TARGETS[$next_id]="$target_to_add"
+    local next_id=$(( ${#targets_ref[@]} + 1 ))
+    targets_ref[$next_id]="$target_to_add"
     log_success "Added target $next_id: $target_to_add"
 }
 
 cmd_rm_target() {
-    local target_id_to_remove="$1"
+    local -n targets_ref="$1" # Nameref to the global TARGETS array
+    local target_id_to_remove="$2"
     if [[ -z "$target_id_to_remove" ]]; then
         log_error "Usage: rm target <id>"
         return
     fi
-    if [[ -v "TARGETS[$target_id_to_remove]" ]]; then
-        log_info "Removed target $target_id_to_remove: ${TARGETS[$target_id_to_remove]}"
-        unset "TARGETS[$target_id_to_remove]"
+    if [[ -v "targets_ref[$target_id_to_remove]" ]]; then
+        log_info "Removed target $target_id_to_remove: ${targets_ref[$target_id_to_remove]}"
+        unset "targets_ref[$target_id_to_remove]"
     else
         log_error "Invalid target ID: $target_id_to_remove"
     fi
@@ -154,6 +161,10 @@ cmd_rm_target() {
 
 cmd_use() {
     local module_name="$1"
+    if ! [[ "$module_name" =~ ^[a-zA-Z0-9_]+/[a-zA-Z0-9_]+$ ]]; then
+        log_error "Invalid module name format. Should be 'category/module'."
+        return
+    fi
     local module_category; module_category=$(echo "$module_name" | cut -d'/' -f1)
     local module_sub_name; module_sub_name=$(echo "$module_name" | cut -d'/' -f2)
     
@@ -171,7 +182,7 @@ cmd_use() {
         MODULE_OPTIONS=() # Clear old options
         log_info "Module '$module_name' loaded."
         
-        local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//ash/ash}"
+        local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\//_}"
         options_array_name=${options_array_name^^}
 
         if declare -p "$options_array_name" &>/dev/null; then
@@ -201,8 +212,9 @@ cmd_back() {
 }
 
 cmd_set() {
-    local key="$1"
-    local value="$2"
+    local args_line="$1"
+    local key; key=$(echo "$args_line" | awk '{print $1}')
+    local value; value=$(echo "$args_line" | cut -d' ' -f2-)
     
     # Alias RHOSTS to TARGET
     if [[ "$key" == "RHOSTS" ]]; then
@@ -214,7 +226,7 @@ cmd_set() {
         return
     fi
     
-    local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//ash/ash}"
+    local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\//_}"
     options_array_name=${options_array_name^^}
     
     if ! declare -p "$options_array_name" &>/dev/null; then
@@ -242,7 +254,7 @@ cmd_run() {
     local func_to_run="mod_${module_sub_name}"
 
     if command -v "$func_to_run" >/dev/null 2>&1; then
-        local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//ash/ash}"
+        local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\//_}"
         options_array_name=${options_array_name^^}
 
         if declare -p "$options_array_name" &>/dev/null; then
@@ -252,7 +264,7 @@ cmd_run() {
                 local required; required=$(echo "$option_details" | grep -o "required=[^ ]*" | cut -d"=" -f2)
                 
                 if [[ "$required" == "true" ]]; then
-                    if [[ -z "${MODULE_OPTIONS[$key]}" ]]; then
+                    if [[ -z "${MODULE_OPTIONS[$key]:-}" ]]; then
                         log_error "Required option '$key' for module '$CURRENT_MODULE' is not set."
                         log_info "Use 'show options' to see available options and 'set $key <value>' to set it."
                         return
@@ -269,6 +281,8 @@ cmd_run() {
 }
 
 # --- INTERACTIVE SHELL ---
+# This function implements the main loop for the interactive shell.
+# It reads user input, parses it, and calls the appropriate command handler.
 interactive_shell() {
     while true; do
         local prompt="ionscan"
@@ -290,14 +304,13 @@ interactive_shell() {
         elif [[ "$cmd" == "show" ]]; then
             cmd_show "$args"
         elif [[ "$cmd" == "add" && "$args" == "target "* ]]; then
-            cmd_add_target "${args#target }"
+            cmd_add_target "TARGETS" "${args#target }"
         elif [[ "$cmd" == "rm" && "$args" == "target "* ]]; then
-            cmd_rm_target "${args#target }"
+            cmd_rm_target "TARGETS" "${args#target }"
         elif [[ "$cmd" == "use" ]]; then
             cmd_use "$args"
         elif [[ "$cmd" == "set" ]]; then
-            local key; local value; read -r key value <<< "$args"
-            cmd_set "$key" "$value"
+            cmd_set "$args"
         elif [[ "$cmd" == "run" ]]; then
             cmd_run
         elif [[ "$cmd" == "back" ]]; then
@@ -314,11 +327,107 @@ done
 }
 
 
+# --- SETUP FUNCTION ---
+# This function checks for and installs missing dependencies.
+# It is designed to be run with the --setup flag.
+run_setup() {
+    log_info "Running setup..."
+    local missing_deps=()
+    local deps_to_check=( "sqlite3" "nbtscan" )
+
+    log_info "Checking for required dependencies..."
+    for dep in "${deps_to_check[@]}"; do
+        if ! command -v "$dep" &> /dev/null; then
+            log_warning "Dependency '$dep' is not installed."
+            missing_deps+=("$dep")
+        else
+            log_success "Dependency '$dep' is already installed."
+        fi
+    done
+
+    if [ ${#missing_deps[@]} -eq 0 ]; then
+        log_info "All dependencies are satisfied."
+        exit 0
+    fi
+
+    echo -e "${YELLOW}The following dependencies are missing: ${missing_deps[*]}${NC}"
+    read -rp "Do you want to install them? [y/N] " choice
+    if [[ ! "$choice" =~ ^[Yy]$ ]]; then
+        log_error "Installation aborted by user."
+        exit 1
+    fi
+
+    log_info "Attempting to install missing dependencies..."
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update && sudo apt-get install -y "${missing_deps[@]}"
+        if [ $? -eq 0 ]; then
+            log_success "Dependencies installed successfully using apt-get."
+        else
+            log_error "Failed to install dependencies using apt-get."
+            exit 1
+        fi
+    elif command -v yum &> /dev/null; then
+        sudo yum install -y "${missing_deps[@]}"
+        if [ $? -eq 0 ]; then
+            log_success "Dependencies installed successfully using yum."
+        else
+            log_error "Failed to install dependencies using yum."
+            exit 1
+        fi
+    else
+        log_error "No supported package manager (apt-get, yum) found. Please install dependencies manually."
+        exit 1
+    fi
+
+    log_info "Setup complete."
+}
 # --- MAIN ENTRY ---
+# The main entry point of the script. It handles command-line arguments,
+# initializes the framework, and decides whether to start the interactive shell
+# or run in non-interactive mode.
 main() {
+    # Handle command-line arguments
+    # We use a loop to handle multiple flags, e.g., --agree --auto
+    local remaining_args=()
+    local auto_run=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --setup)
+                run_setup
+                exit 0
+                ;;
+            --agree)
+                export AGREED="true"
+                shift
+                ;;
+            --help)
+                show_help # from core.sh
+                exit 0
+                ;;
+            --auto)
+                auto_run=true
+                shift
+                ;;
+            *)
+                # Not a flag we handle here, could be for non-interactive mode
+                remaining_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+    
+    # Restore non-flag arguments
+    set -- "${remaining_args[@]}"
+
+    if [[ "$auto_run" == "true" ]]; then
+        # If --auto is passed, prepend the auto-run commands
+        set -- "use" "recon/passive" "run" "use" "report/report" "set" "AUTO_OPEN" "true" "run" "$@"
+    fi
+
     setup_config
     db_init # Initialize the database at the start
 
+    # If after parsing flags, no other arguments remain, start interactive shell
     if [[ $# -eq 0 ]]; then
         header # Display header once on start
         # Disclaimer check
@@ -329,9 +438,83 @@ main() {
             if [[ ! "$A" =~ ^[Yy]$ ]]; then exit 1; fi
         fi
         interactive_shell
-    fi
+    else
+        # Non-interactive mode
+        header
+        if [[ "${AGREED:-}" != "true" ]]; then
+            log_error "DISCLAIMER: This tool is for educational and authorized use only."
+            log_error "Run with the --agree flag to accept the terms."
+            exit 1
+        fi
 
-    # Handle non-interactive command-line arguments (re-integration)
+        local commands_to_run=("$@")
+        local i=0
+        while [[ $i -lt ${#commands_to_run[@]} ]]; do
+            local cmd="${commands_to_run[$i]}"
+            i=$((i + 1))
+            
+            case "$cmd" in
+                use)
+                    local module="${commands_to_run[$i]}"
+                    cmd_use "$module"
+                    i=$((i + 1))
+                    ;;
+                set)
+                    local key="${commands_to_run[$i]}"
+                    i=$((i + 1))
+                    # Collect all parts of the value until the next command
+                    local value=""
+                    while [[ $i -lt ${#commands_to_run[@]} ]] && ! [[ "${commands_to_run[$i]}" =~ ^(use|set|run|add|rm|show|back|exit)$ ]]; do
+                        if [[ -n "$value" ]]; then
+                            value+=" "
+                        fi
+                        value+="${commands_to_run[$i]}"
+                        i=$((i+1))
+                    done
+                    cmd_set "$key $value"
+                    ;;
+                run)
+                    cmd_run
+                    ;;
+                add)
+                    if [[ "${commands_to_run[$i]}" == "target" ]]; then
+                        i=$((i+1))
+                        local target_val="${commands_to_run[$i]}"
+                        i=$((i+1))
+                        cmd_add_target "TARGETS" "$target_val"
+                    else
+                        log_error "Unknown add command in non-interactive mode."
+                    fi
+                    ;;
+                rm)
+                    if [[ "${commands_to_run[$i]}" == "target" ]]; then
+                        i=$((i+1))
+                        local target_id="${commands_to_run[$i]}"
+                        i=$((i+1))
+                        cmd_rm_target "TARGETS" "$target_id"
+                    else
+                        log_error "Unknown rm command in non-interactive mode."
+                    fi
+                    ;;
+                show)
+                    local sub_cmd="${commands_to_run[$i]}"
+                    i=$((i+1))
+                    cmd_show "$sub_cmd"
+                    ;;
+                back)
+                    cmd_back
+                    ;;
+                exit|quit)
+                    cmd_exit
+                    ;;
+                *)
+                    log_error "Unknown command in non-interactive mode: $cmd"
+                    # To prevent infinite loops on unknown commands, we stop processing.
+                    break
+                    ;;
+            esac
+        done
+    fi
 }
 
 main "$@"

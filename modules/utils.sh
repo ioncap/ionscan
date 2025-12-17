@@ -31,6 +31,10 @@ MOD_OPTIONS_UTILS_DECOY[DECOYS]="description='Number of decoys to use' required=
 
 # [4] MAC
 mod_mac() {
+    if ! command -v macchanger &> /dev/null; then
+        log_error "macchanger is not installed. Please install it first."
+        return
+    fi
     local interface="${MODULE_OPTIONS[INTERFACE]}"
 
     if [[ -z "$interface" ]]; then
@@ -48,7 +52,7 @@ mod_arp() {
     # This module doesn't currently take options from MODULE_OPTIONS.
     # It watches the default gateway.
     get_interface; local G; G=$(ip route | grep default | awk '{print $3}' | head -n1)
-    if [[ -z "$G" ]]; then log_error "No gateway found."; return; }
+    if [[ -z "$G" ]]; then log_error "No gateway found."; return; fi
     log_info "Monitoring Gateway: $G (CTRL+C to stop)"
     M1=$(arp -n | grep "$G" | awk '{print $3}')
     while true; do
