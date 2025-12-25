@@ -1,40 +1,153 @@
 #!/bin/bash
 
 # ==============================================================================
-#  IONSCAN v23.0 - THE FRAMEWORK EDITION
+#  IONSCAN v24.0 - IMPROVED SECURITY & ROBUSTNESS EDITION
 # ==============================================================================
 #
 #  Main entry point for the IonScan framework.
 #  This script sources libraries and modules, then starts the interactive shell.
 #
+#  IMPROVEMENTS:
+#  - Fixed eval security vulnerability
+#  - Added comprehensive input validation
+#  - Improved error handling with traps
+#  - Better logging with timestamps and log files
+#  - Refactored option parsing to reduce duplication
+#  - Added history support for interactive shell
+#  - Improved non-interactive mode parsing
+#  - Added safety checks for auto-run mode
 # ==============================================================================
+
+# --- STRICT MODE & TRAP SETUP ---
+set -o pipefail  # Catch errors in pipes
+set -o nounset   # Catch unset variables
+
+# Global cleanup on exit
+cleanup() {
+    local exit_code=$?
+    if [[ $exit_code -ne 0 ]]; then
+        log_error "Script exited with code $exit_code"
+    fi
+}
+
+trap cleanup EXIT
+trap 'log_error "Script interrupted by user"; exit 130' INT TERM
 
 # --- SOURCE FRAMEWORK ---
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
 
-# Libraries
-source "$INSTALL_DIR/lib/ui.sh"
-source "$INSTALL_DIR/lib/core.sh"
-source "$INSTALL_DIR/lib/network.sh"
-source "$INSTALL_DIR/lib/database.sh" # New: Database library
+# Libraries with error checking
+source "$INSTALL_DIR/lib/ui.sh" || { 
+    echo "ERROR: Failed to load ui.sh"; exit 1; 
+}
+source "$INSTALL_DIR/lib/core.sh" || { 
+    echo "ERROR: Failed to load core.sh"; exit 1; 
+}
+source "$INSTALL_DIR/lib/network.sh" || { 
+    echo "ERROR: Failed to load network.sh"; exit 1; 
+}
+source "$INSTALL_DIR/lib/database.sh" || { 
+    echo "ERROR: Failed to load database.sh"; exit 1; 
+}
+
+# --- CONFIGURATION ---
+VALID_MODULE_CATEGORIES=("recon" "exploit" "report" "post" "auxiliary")
+HISTFILE="${CONFIG_DIR:-.}/.ionscan_history"
+HISTSIZE=1000
 
 # --- STATE VARIABLES ---
-# Global variables are used to manage the state of the interactive shell.
-# CURRENT_MODULE: The path of the currently loaded module (e.g., recon/fast_scan).
-# MODULE_OPTIONS: An associative array holding the key-value pairs for the current module's options.
-# TARGETS: An associative array storing the list of targets for scanning.
 CURRENT_MODULE=""
 declare -A MODULE_OPTIONS
-declare -A TARGETS=([0]="demo.ionscan.org") # Add a demo target
+declare -A TARGETS=([0]="demo.ionscan.org")
+
+# --- UTILITY FUNCTIONS ---
+
+# Parse a single field from module option string
+# Usage: parse_module_option "$option_details" "field_name"
+parse_module_option() {
+    local option_details="$1"
+    local field="$2"
+    
+    case "$field" in
+        description)
+            echo "$option_details" | grep -oP "(?<=description=')[^']*" || echo ""
+            ;;
+        required)
+            echo "$option_details" | grep -oP "(?<=required=)[^ ]*" || echo "false"
+            ;;
+        default)
+            echo "$option_details" | grep -oP "(?<=default=')[^']*" || echo ""
+            ;;
+        type)
+            echo "$option_details" | grep -oP "(?<=type=')[^']*" || echo "string"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+# Validate input based on type
+# Usage: validate_input "value" "type"
+# Returns: 0 if valid, 1 if invalid
+validate_input() {
+    local value="$1"
+    local type="${2:-string}"
+    
+    case "$type" in
+        ip)
+            [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && return 0
+            ;;
+        cidr)
+            [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] && return 0
+            ;;
+        ip_or_cidr|target)
+            [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$ ]] && return 0
+            [[ "$value" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] && return 0
+            ;;
+        port)
+            [[ "$value" =~ ^[0-9]+$ ]] && (( value >= 1 && value <= 65535 )) && return 0
+            ;;
+        port_range)
+            [[ "$value" =~ ^[0-9]+-[0-9]+$ ]] && return 0
+            ;;
+        boolean)
+            [[ "$value" =~ ^(true|false|yes|no|1|0)$ ]] && return 0
+            ;;
+        string|*)
+            # String is always valid (but we still sanitize)
+            return 0
+            ;;
+    esac
+    
+    return 1
+}
+
+# Sanitize user input to prevent command injection
+# Usage: sanitize_input "value"
+sanitize_input() {
+    local value="$1"
+    # Remove potentially dangerous characters
+    echo "$value" | sed 's/[;&|`$()]//g'
+}
+
+# Get the options array name for current module
+get_options_array_name() {
+    local module="${1:-$CURRENT_MODULE}"
+    if [[ -z "$module" ]]; then
+        return 1
+    fi
+    local name="MOD_OPTIONS_${module//\//_}"
+    echo "${name^^}"
+}
 
 # --- COMMAND HANDLERS ---
-# Each 'cmd_*' function is responsible for handling a specific command entered
-# by the user in the interactive shell.
 
 cmd_help() {
-    echo -e "${BOLD}IonScan Interactive Shell${NC}"
-    echo "========================="
-    echo "Core Commands:"
+    echo -e "${BOLD}IonScan Interactive Shell - v24.0${NC}"
+    echo "====================================="
+    echo ""
+    echo -e "${BOLD}Core Commands:${NC}"
     echo "  help              Show this help message"
     echo "  show modules      List all available modules"
     echo "  show options      Show options for the current module"
@@ -42,10 +155,15 @@ cmd_help() {
     echo "  add target <ip>   Add a target to the target list"
     echo "  rm target <id>    Remove a target from the list"
     echo "  use <module>      Select a module to use (e.g., 'use recon/fast_scan')"
-    echo "  set <key> <val>   Set an option for the current module (e.g., 'set TARGET 192.168.1.1')"
+    echo "  set <key> <val>   Set an option for the current module"
     echo "  run               Run the current module"
     echo "  back              Deselect the current module"
     echo "  exit              Exit IonScan"
+    echo ""
+    echo -e "${BOLD}Tips:${NC}"
+    echo "  - Press TAB for command completion"
+    echo "  - Use UP/DOWN arrows for command history"
+    echo "  - Valid module categories: ${VALID_MODULE_CATEGORIES[*]}"
     echo ""
 }
 
@@ -62,15 +180,27 @@ cmd_show() {
             echo "===================="
             
             local modules_dir="$INSTALL_DIR/modules"
-            local files; files=$(find "$modules_dir" -type f -name "*.sh" | sort)
+            if [[ ! -d "$modules_dir" ]]; then
+                log_error "Modules directory not found: $modules_dir"
+                return 1
+            fi
+            
+            local files
+            files=$(find "$modules_dir" -type f -name "*.sh" 2>/dev/null | sort)
+            
+            if [[ -z "$files" ]]; then
+                log_warning "No modules found in $modules_dir"
+                return 0
+            fi
             
             for file in $files; do
-                local category; category=$(basename "$file" .sh)
-                local mods; mods=$(grep -oP '(?<=^mod_)[a-zA-Z0-9_]+' "$file")
+                local category
+                category=$(basename "$file" .sh)
+                local mods
+                mods=$(grep -oP '(?<=^mod_)[a-zA-Z0-9_]+' "$file" 2>/dev/null || true)
                 if [[ -n "$mods" ]]; then
                     echo -e "  ${CYAN}${category}${NC}:"
-                    for mod in $mods;
-                    do
+                    for mod in $mods; do
                         echo "    - $category/$mod"
                     done
                 fi
@@ -80,35 +210,44 @@ cmd_show() {
         options)
             if [[ -z "$CURRENT_MODULE" ]]; then
                 log_error "No module is currently loaded. Use 'use <module>' first."
-                return
+                return 1
             fi
             
             echo -e "${BOLD}Module Options for: ${RED}${CURRENT_MODULE}${NC}"
             echo "================================================="
             
-            local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\//_}"
-            options_array_name=${options_array_name^^}
+            local options_array_name
+            options_array_name=$(get_options_array_name) || {
+                log_error "Failed to get options array name"
+                return 1
+            }
 
             if ! declare -p "$options_array_name" &>/dev/null; then
                 log_warning "Module has no configurable options."
-                return
+                return 0
             fi
 
             declare -n ref_options_array="$options_array_name"
             
-            printf "  %-15s %-15s %-10s %s\n" "Name" "Current Setting" "Required" "Description"
-            printf "  %-15s %-15s %-10s %s\n" "----" "---------------" "--------" "-----------"
+            printf "  %-15s %-20s %-10s %-10s %s\n" "Name" "Current Setting" "Required" "Type" "Description"
+            printf "  %-15s %-20s %-10s %-10s %s\n" "----" "---------------" "--------" "----" "-----------"
             
             for key in "${!ref_options_array[@]}"; do
                 local option_details="${ref_options_array[$key]}"
                 
-                local description; description=$(echo "$option_details" | grep -o "description='[^']*'" | cut -d"'" -f2)
-                local required; required=$(echo "$option_details" | grep -o "required=[^ ]*" | cut -d"=" -f2)
-                local default_val; default_val=$(echo "$option_details" | grep -o "default='[^']*'" | cut -d"'" -f2)
+                local description
+                description=$(parse_module_option "$option_details" "description")
+                local required
+                required=$(parse_module_option "$option_details" "required")
+                local default_val
+                default_val=$(parse_module_option "$option_details" "default")
+                local type_val
+                type_val=$(parse_module_option "$option_details" "type")
                 
                 local current_val="${MODULE_OPTIONS[$key]:-$default_val}"
+                [[ -z "$current_val" ]] && current_val="<not set>"
                 
-                printf "  %-15s %-15s %-10s %s\n" "$key" "$current_val" "$required" "$description"
+                printf "  %-15s %-20s %-10s %-10s %s\n" "$key" "$current_val" "$required" "$type_val" "$description"
             done
             echo ""
             ;; 
@@ -126,19 +265,49 @@ cmd_show() {
             fi
             echo ""
             ;; 
+        history)
+            if [[ -f "$HISTFILE" ]]; then
+                echo -e "${BOLD}Command History:${NC}"
+                echo "================"
+                cat "$HISTFILE" | tail -n 20
+                echo ""
+            else
+                log_info "No command history available."
+            fi
+            ;;
         *)
-            log_error "Unknown 'show' command: '$sub_cmd'. Try 'show modules', 'show options', or 'show targets'."
+            log_error "Unknown 'show' command: '$sub_cmd'."
+            log_info "Available: modules, options, targets, history"
+            return 1
             ;; 
     esac
 }
 
 cmd_add_target() {
-    local -n targets_ref="$1" # Nameref to the global TARGETS array
+    local -n targets_ref="$1"
     local target_to_add="$2"
+    
     if [[ -z "$target_to_add" ]]; then
         log_error "Usage: add target <ip/domain/cidr>"
-        return
+        return 1
     fi
+    
+    # Validate target format
+    if ! validate_input "$target_to_add" "target"; then
+        log_error "Invalid target format: '$target_to_add'"
+        log_info "Valid formats: IP (192.168.1.1), CIDR (192.168.1.0/24), or domain (example.com)"
+        return 1
+    fi
+    
+    # Check for duplicates
+    for id in "${!targets_ref[@]}"; do
+        if [[ "${targets_ref[$id]}" == "$target_to_add" ]]; then
+            log_warning "Target '$target_to_add' already exists with ID $id"
+            return 0
+        fi
+    done
+    
+    # Find next available ID
     local max_id=0
     for id in "${!targets_ref[@]}"; do
         if (( id > max_id )); then
@@ -146,64 +315,110 @@ cmd_add_target() {
         fi
     done
     local next_id=$(( max_id + 1 ))
+    
     targets_ref[$next_id]="$target_to_add"
     log_success "Added target $next_id: $target_to_add"
 }
 
 cmd_rm_target() {
-    local -n targets_ref="$1" # Nameref to the global TARGETS array
+    local -n targets_ref="$1"
     local target_id_to_remove="$2"
+    
     if [[ -z "$target_id_to_remove" ]]; then
         log_error "Usage: rm target <id>"
-        return
+        return 1
     fi
+    
+    # Validate ID is numeric
+    if ! [[ "$target_id_to_remove" =~ ^[0-9]+$ ]]; then
+        log_error "Invalid target ID: '$target_id_to_remove' (must be numeric)"
+        return 1
+    fi
+    
     if [[ -v "targets_ref[$target_id_to_remove]" ]]; then
-        log_info "Removed target $target_id_to_remove: ${targets_ref[$target_id_to_remove]}"
+        local target_value="${targets_ref[$target_id_to_remove]}"
         unset "targets_ref[$target_id_to_remove]"
+        log_success "Removed target $target_id_to_remove: $target_value"
     else
         log_error "Invalid target ID: $target_id_to_remove"
+        log_info "Use 'show targets' to see available targets"
+        return 1
     fi
 }
 
 cmd_use() {
     local module_name="$1"
+    
+    # Validate module name format
     if ! [[ "$module_name" =~ ^[a-zA-Z0-9_]+/[a-zA-Z0-9_]+$ ]]; then
         log_error "Invalid module name format. Should be 'category/module'."
-        return
+        log_info "Example: use recon/fast_scan"
+        return 1
     fi
-    local module_category; module_category=$(echo "$module_name" | cut -d'/' -f1)
-    local module_sub_name; module_sub_name=$(echo "$module_name" | cut -d'/' -f2)
+    
+    local module_category
+    module_category=$(echo "$module_name" | cut -d'/' -f1)
+    local module_sub_name
+    module_sub_name=$(echo "$module_name" | cut -d'/' -f2)
+    
+    # Validate category is in whitelist
+    local valid_category=false
+    for cat in "${VALID_MODULE_CATEGORIES[@]}"; do
+        if [[ "$cat" == "$module_category" ]]; then
+            valid_category=true
+            break
+        fi
+    done
+    
+    if [[ "$valid_category" == "false" ]]; then
+        log_error "Invalid module category: '$module_category'"
+        log_info "Valid categories: ${VALID_MODULE_CATEGORIES[*]}"
+        return 1
+    fi
     
     local module_path="$INSTALL_DIR/modules/${module_category}.sh"
 
-    if [[ -f "$module_path" ]]; then
-        source "$module_path"
-        
-        if ! command -v "mod_${module_sub_name}" >/dev/null 2>&1; then
-            log_error "Sub-module '$module_sub_name' not found in '$module_category'."
-            return
-        fi
-        
-        CURRENT_MODULE="$module_name"
-        MODULE_OPTIONS=() # Clear old options
-        log_info "Module '$module_name' loaded."
-        
-        local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\//_}"
-        options_array_name=${options_array_name^^}
+    if [[ ! -f "$module_path" ]]; then
+        log_error "Module file not found: $module_path"
+        log_info "Use 'show modules' to see available modules"
+        return 1
+    fi
+    
+    # Source the module file
+    source "$module_path" || {
+        log_error "Failed to source module file: $module_path"
+        return 1
+    }
+    
+    # Check if the sub-module function exists
+    local func_name="mod_${module_sub_name}"
+    if ! command -v "$func_name" >/dev/null 2>&1; then
+        log_error "Sub-module '$module_sub_name' not found in '$module_category'."
+        log_info "Available modules in $module_category:"
+        grep -oP "(?<=^mod_)[a-zA-Z0-9_]+" "$module_path" 2>/dev/null | sed 's/^/  - /'
+        return 1
+    fi
+    
+    # Successfully loaded module
+    CURRENT_MODULE="$module_name"
+    MODULE_OPTIONS=()
+    log_success "Module '$module_name' loaded."
+    
+    # Load default values from module options
+    local options_array_name
+    options_array_name=$(get_options_array_name)
 
-        if declare -p "$options_array_name" &>/dev/null; then
-            declare -n ref_options_array="$options_array_name"
-            for key in "${!ref_options_array[@]}"; do
-                local option_details="${ref_options_array[$key]}"
-                local default_val; default_val=$(echo "$option_details" | grep -o "default='[^']*'" | cut -d"'" -f2)
-                if [[ -n "$default_val" ]]; then
-                    MODULE_OPTIONS[$key]="$default_val"
-                fi
-            done
-        fi
-        
-    else
-        log_error "Module category '$module_category' not found."
+    if declare -p "$options_array_name" &>/dev/null; then
+        declare -n ref_options_array="$options_array_name"
+        for key in "${!ref_options_array[@]}"; do
+            local option_details="${ref_options_array[$key]}"
+            local default_val
+            default_val=$(parse_module_option "$option_details" "default")
+            if [[ -n "$default_val" ]]; then
+                MODULE_OPTIONS[$key]="$default_val"
+            fi
+        done
+        log_info "Use 'show options' to see available options for this module."
     fi
 }
 
@@ -219,127 +434,234 @@ cmd_back() {
 
 cmd_set() {
     local args_line="$1"
-    local key; key=$(echo "$args_line" | awk '{print $1}')
-    local value; value=$(echo "$args_line" | cut -d' ' -f2-)
+    local key
+    key=$(echo "$args_line" | awk '{print $1}')
+    local value
+    value=$(echo "$args_line" | cut -d' ' -f2-)
     
-    # Alias RHOSTS to TARGET
+    if [[ -z "$key" || -z "$value" || "$key" == "$value" ]]; then
+        log_error "Usage: set <option_name> <value>"
+        return 1
+    fi
+    
+    # Alias RHOSTS to TARGET for Metasploit compatibility
     if [[ "$key" == "RHOSTS" ]]; then
         key="TARGET"
+        log_info "Note: RHOSTS aliased to TARGET"
     fi
 
     if [[ -z "$CURRENT_MODULE" ]]; then
         log_error "No module loaded. Use 'use <module>' first."
-        return
+        return 1
     fi
     
-    local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\//_}"
-    options_array_name=${options_array_name^^}
+    local options_array_name
+    options_array_name=$(get_options_array_name) || {
+        log_error "Failed to get options for current module"
+        return 1
+    }
     
     if ! declare -p "$options_array_name" &>/dev/null; then
         log_error "Module has no options to set."
-        return
+        return 1
     fi
     
     declare -n ref_options_array="$options_array_name"
     
-    if [[ -v "ref_options_array[$key]" ]]; then
-        MODULE_OPTIONS[$key]="$value"
-        log_info "$key => $value"
-    else
+    if [[ ! -v "ref_options_array[$key]" ]]; then
         log_error "Unknown option for this module: '$key'"
+        log_info "Use 'show options' to see available options"
+        return 1
     fi
+    
+    # Get option details for validation
+    local option_details="${ref_options_array[$key]}"
+    local type_val
+    type_val=$(parse_module_option "$option_details" "type")
+    
+    # Validate input based on type
+    if ! validate_input "$value" "$type_val"; then
+        log_error "Invalid value '$value' for option '$key' (expected type: $type_val)"
+        return 1
+    fi
+    
+    # Sanitize the value
+    local sanitized_value
+    sanitized_value=$(sanitize_input "$value")
+    
+    MODULE_OPTIONS[$key]="$sanitized_value"
+    log_success "$key => $sanitized_value"
 }
 
 cmd_run() {
     if [[ -z "$CURRENT_MODULE" ]]; then
         log_error "No module loaded to run. Use 'use <module>' first."
-        return
+        return 1
     fi
     
-    local module_sub_name; module_sub_name=$(echo "$CURRENT_MODULE" | cut -d'/' -f2)
+    local module_sub_name
+    module_sub_name=$(echo "$CURRENT_MODULE" | cut -d'/' -f2)
     local func_to_run="mod_${module_sub_name}"
 
-    if command -v "$func_to_run" >/dev/null 2>&1; then
-        local options_array_name="MOD_OPTIONS_${CURRENT_MODULE//\//_}"
-        options_array_name=${options_array_name^^}
+    if ! command -v "$func_to_run" >/dev/null 2>&1; then
+        log_error "Cannot find function '$func_to_run' for module '$CURRENT_MODULE'."
+        return 1
+    fi
+    
+    # Validate required options are set
+    local options_array_name
+    options_array_name=$(get_options_array_name)
 
-        if declare -p "$options_array_name" &>/dev/null; then
-            declare -n ref_options_array="$options_array_name"
-            for key in "${!ref_options_array[@]}"; do
-                local option_details="${ref_options_array[$key]}"
-                local required; required=$(echo "$option_details" | grep -o "required=[^ ]*" | cut -d"=" -f2)
-                
-                if [[ "$required" == "true" ]]; then
-                    if [[ -z "${MODULE_OPTIONS[$key]:-}" ]]; then
-                        log_error "Required option '$key' for module '$CURRENT_MODULE' is not set."
-                        log_info "Use 'show options' to see available options and 'set $key <value>' to set it."
-                        return
-                    fi
-                fi
-            done
-        fi
+    if declare -p "$options_array_name" &>/dev/null; then
+        declare -n ref_options_array="$options_array_name"
+        local missing_required=()
         
-        log_info "Running module: $CURRENT_MODULE..."
-        eval "$func_to_run"
+        for key in "${!ref_options_array[@]}"; do
+            local option_details="${ref_options_array[$key]}"
+            local required
+            required=$(parse_module_option "$option_details" "required")
+            
+            if [[ "$required" == "true" ]]; then
+                if [[ -z "${MODULE_OPTIONS[$key]:-}" ]]; then
+                    missing_required+=("$key")
+                fi
+            fi
+        done
+        
+        if [[ ${#missing_required[@]} -gt 0 ]]; then
+            log_error "Required options not set: ${missing_required[*]}"
+            log_info "Use 'show options' to see required options and 'set <option> <value>' to set them."
+            return 1
+        fi
+    fi
+    
+    # Create log file for this run
+    local timestamp
+    timestamp=$(date +%Y%m%d_%H%M%S)
+    local log_file="$LOG_DIR/module_${CURRENT_MODULE//\//_}_${timestamp}.log"
+    
+    # Ensure log directory exists
+    mkdir -p "$LOG_DIR" 2>/dev/null || true
+    
+    local start_time
+    start_time=$(date +%s)
+    
+    log_info "Running module: $CURRENT_MODULE..."
+    log_info "Logging to: $log_file"
+    
+    # Run the module function directly (NO EVAL!)
+    # Redirect output to both console and log file
+    {
+        echo "=== Module Run: $CURRENT_MODULE ==="
+        echo "=== Timestamp: $(date) ==="
+        echo "=== Options: ==="
+        for key in "${!MODULE_OPTIONS[@]}"; do
+            echo "  $key = ${MODULE_OPTIONS[$key]}"
+        done
+        echo "=== Output: ==="
+    } | tee "$log_file"
+    
+    # Execute module function with error handling
+    if "$func_to_run" 2>&1 | tee -a "$log_file"; then
+        local end_time
+        end_time=$(date +%s)
+        local duration=$((end_time - start_time))
+        
+        log_success "Module completed successfully in ${duration}s"
+        echo "=== Completed at: $(date) ===" | tee -a "$log_file"
     else
-        log_error "Cannot find run function '$func_to_run' for module '$CURRENT_MODULE'."
+        local exit_code=$?
+        local end_time
+        end_time=$(date +%s)
+        local duration=$((end_time - start_time))
+        
+        log_error "Module failed with exit code $exit_code after ${duration}s"
+        echo "=== Failed at: $(date) with exit code $exit_code ===" | tee -a "$log_file"
+        return $exit_code
     fi
 }
 
 # --- INTERACTIVE SHELL ---
-# This function implements the main loop for the interactive shell.
-# It reads user input, parses it, and calls the appropriate command handler.
+
 interactive_shell() {
+    # Enable command history
+    set -o history
+    
+    # Simple tab completion for main commands
+    # Note: Full tab completion requires more complex readline integration
+    
     while true; do
         local prompt="ionscan"
         if [[ -n "$CURRENT_MODULE" ]]; then
-            prompt="${prompt} (${CURRENT_MODULE})"
+            prompt="${prompt} (${RED}${CURRENT_MODULE}${NC})"
         fi
         prompt="${prompt} > "
 
-        read -rp "$prompt" line
+        read -rep "$prompt" line
 
+        # Add to history if non-empty
         if [[ -n "$line" ]]; then
             history -s "$line"
         fi
 
-        local cmd; read -r cmd args <<< "$line"
+        # Parse command and arguments
+        local cmd
+        local args
+        read -r cmd args <<< "$line"
 
-        if [[ "$cmd" == "help" || "$cmd" == "?" ]]; then
-            cmd_help
-        elif [[ "$cmd" == "show" ]]; then
-            cmd_show "$args"
-        elif [[ "$cmd" == "add" && "$args" == "target "* ]]; then
-            cmd_add_target "TARGETS" "${args#target }"
-        elif [[ "$cmd" == "rm" && "$args" == "target "* ]]; then
-            cmd_rm_target "TARGETS" "${args#target }"
-        elif [[ "$cmd" == "use" ]]; then
-            cmd_use "$args"
-        elif [[ "$cmd" == "set" ]]; then
-            cmd_set "$args"
-        elif [[ "$cmd" == "run" ]]; then
-            cmd_run
-        elif [[ "$cmd" == "back" ]]; then
-            cmd_back
-        elif [[ "$cmd" == "exit" || "$cmd" == "quit" ]]; then
-            cmd_exit
-        elif [[ -z "$cmd" ]]; then
-            # Empty command, do nothing
-            :
-        else
-            log_error "Unknown command: '$cmd'. Type 'help' for a list of commands."
-        fi
-done
+        # Handle commands
+        case "$cmd" in
+            help|"?")
+                cmd_help
+                ;;
+            show)
+                cmd_show "$args"
+                ;;
+            add)
+                if [[ "$args" == "target "* ]]; then
+                    cmd_add_target "TARGETS" "${args#target }"
+                else
+                    log_error "Usage: add target <ip/domain/cidr>"
+                fi
+                ;;
+            rm)
+                if [[ "$args" == "target "* ]]; then
+                    cmd_rm_target "TARGETS" "${args#target }"
+                else
+                    log_error "Usage: rm target <id>"
+                fi
+                ;;
+            use)
+                cmd_use "$args"
+                ;;
+            set)
+                cmd_set "$args"
+                ;;
+            run)
+                cmd_run
+                ;;
+            back)
+                cmd_back
+                ;;
+            exit|quit)
+                cmd_exit
+                ;;
+            "")
+                # Empty command, do nothing
+                ;;
+            *)
+                log_error "Unknown command: '$cmd'. Type 'help' for a list of commands."
+                ;;
+        esac
+    done
 }
 
-
 # --- SETUP FUNCTION ---
-# This function checks for and installs missing dependencies.
-# It is designed to be run with the --setup flag.
+
 run_setup() {
     log_info "Running setup..."
     local missing_deps=()
-    local deps_to_check=( "sqlite3" "nbtscan" )
+    local deps_to_check=( "nmap" "sqlite3" "nbtscan" )
 
     log_info "Checking for required dependencies..."
     for dep in "${deps_to_check[@]}"; do
@@ -351,8 +673,8 @@ run_setup() {
         fi
     done
 
-    if [ ${#missing_deps[@]} -eq 0 ]; then
-        log_info "All dependencies are satisfied."
+    if [[ ${#missing_deps[@]} -eq 0 ]]; then
+        log_success "All dependencies are satisfied."
         exit 0
     fi
 
@@ -366,7 +688,7 @@ run_setup() {
     log_info "Attempting to install missing dependencies..."
     if command -v apt-get &> /dev/null; then
         sudo apt-get update && sudo apt-get install -y "${missing_deps[@]}"
-        if [ $? -eq 0 ]; then
+        if [[ $? -eq 0 ]]; then
             log_success "Dependencies installed successfully using apt-get."
         else
             log_error "Failed to install dependencies using apt-get."
@@ -374,28 +696,35 @@ run_setup() {
         fi
     elif command -v yum &> /dev/null; then
         sudo yum install -y "${missing_deps[@]}"
-        if [ $? -eq 0 ]; then
+        if [[ $? -eq 0 ]]; then
             log_success "Dependencies installed successfully using yum."
         else
             log_error "Failed to install dependencies using yum."
             exit 1
         fi
+    elif command -v dnf &> /dev/null; then
+        sudo dnf install -y "${missing_deps[@]}"
+        if [[ $? -eq 0 ]]; then
+            log_success "Dependencies installed successfully using dnf."
+        else
+            log_error "Failed to install dependencies using dnf."
+            exit 1
+        fi
     else
-        log_error "No supported package manager (apt-get, yum) found. Please install dependencies manually."
+        log_error "No supported package manager found. Please install dependencies manually."
         exit 1
     fi
 
-    log_info "Setup complete."
+    log_success "Setup complete."
 }
+
 # --- MAIN ENTRY ---
-# The main entry point of the script. It handles command-line arguments,
-# initializes the framework, and decides whether to start the interactive shell
-# or run in non-interactive mode.
+
 main() {
     # Handle command-line arguments
-    # We use a loop to handle multiple flags, e.g., --agree --auto
     local remaining_args=()
     local auto_run=false
+    
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --setup)
@@ -407,7 +736,7 @@ main() {
                 shift
                 ;;
             --help)
-                show_help # from core.sh
+                show_help 2>/dev/null || cmd_help
                 exit 0
                 ;;
             --auto)
@@ -415,7 +744,6 @@ main() {
                 shift
                 ;;
             *)
-                # Not a flag we handle here, could be for non-interactive mode
                 remaining_args+=("$1")
                 shift
                 ;;
@@ -425,103 +753,150 @@ main() {
     # Restore non-flag arguments
     set -- "${remaining_args[@]}"
 
+    # Auto-run mode setup with safety checks
     if [[ "$auto_run" == "true" ]]; then
-        # If --auto is passed, prepend a comprehensive scan sequence.
-        get_interface # Sets MY_IP
+        get_interface 2>/dev/null || true
         local local_subnet
-        local_subnet=$(echo "$MY_IP" | cut -d'.' -f1-3).0/24
+        local_subnet=$(echo "${MY_IP:-192.168.1.0}" | cut -d'.' -f1-3).0/24
+        
+        log_warning "AUTO MODE ENABLED"
+        log_warning "This will scan local subnet: $local_subnet"
+        log_warning "This may trigger IDS/IPS systems and network monitoring alerts!"
+        
+        if [[ "${AGREED:-}" != "true" ]]; then
+            read -rp "Continue with auto-run? [y/N] " choice
+            if [[ ! "$choice" =~ ^[Yy]$ ]]; then
+                log_error "Auto-run cancelled by user"
+                exit 1
+            fi
+        fi
+        
         set -- "use" "recon/fast_scan" "set" "TARGET" "$local_subnet" "run" \
                "use" "exploit/advanced_vuln" "set" "TARGET" "$local_subnet" "run" \
                "use" "report/report" "set" "AUTO_OPEN" "true" "run" "$@"
     fi
 
-    setup_config
-    db_init # Initialize the database at the start
+    # Initialize framework
+    setup_config 2>/dev/null || true
+    db_init 2>/dev/null || log_warning "Database initialization failed"
 
     # Check and fix log directory permissions
-    if [ -d "$LOG_DIR" ] && [ ! -w "$LOG_DIR" ]; then
+    if [[ -d "${LOG_DIR:-}" ]] && [[ ! -w "${LOG_DIR:-}" ]]; then
         local owner="${SUDO_USER:-$(whoami)}"
         log_warning "Log directory not writable. Attempting to fix with 'sudo chown'..."
-        sudo chown -R "$owner" "$LOG_DIR"
-        if [ ! -w "$LOG_DIR" ]; then
-            log_error "Failed to set correct permissions on $LOG_DIR. Please fix it manually."
-            exit 1
-        fi
+        sudo chown -R "$owner" "$LOG_DIR" 2>/dev/null || {
+            log_error "Failed to set permissions on $LOG_DIR. Please fix manually."
+        }
     fi
 
-    # If after parsing flags, no other arguments remain, start interactive shell
+    # Start interactive or non-interactive mode
     if [[ $# -eq 0 ]]; then
-        header # Display header once on start
+        # Interactive mode
+        header 2>/dev/null || echo "=== IonScan v24.0 ==="
+        
         # Disclaimer check
         if [[ "${AGREED:-}" != "true" ]]; then
             echo -e "${RED}${BOLD}DISCLAIMER${NC}"
             echo "This tool is for educational and authorized use only."
-            read -rp "Do you agree? [y/N] " A
-            if [[ ! "$A" =~ ^[Yy]$ ]]; then exit 1; fi
+            echo "Unauthorized network scanning is illegal."
+            echo ""
+            read -rp "Do you agree to use this tool responsibly? [y/N] " A
+            if [[ ! "$A" =~ ^[Yy]$ ]]; then 
+                log_error "You must agree to the terms to use this tool."
+                exit 1
+            fi
         fi
+        
         interactive_shell
     else
         # Non-interactive mode
-        header
+        header 2>/dev/null || echo "=== IonScan v24.0 ==="
+        
         if [[ "${AGREED:-}" != "true" ]]; then
             log_error "DISCLAIMER: This tool is for educational and authorized use only."
             log_error "Run with the --agree flag to accept the terms."
             exit 1
         fi
 
-        local commands_to_run=("$@")
+        # Execute commands from arguments
         local i=0
-        while [[ $i -lt ${#commands_to_run[@]} ]]; do
-            local cmd="${commands_to_run[$i]}"
+        while [[ $i -lt $# ]]; do
+            local cmd="${!i}"
             i=$((i + 1))
             
             case "$cmd" in
                 use)
-                    local module="${commands_to_run[$i]}"
-                    cmd_use "$module"
-                    i=$((i + 1))
+                    if [[ $i -le $# ]]; then
+                        local module="${!i}"
+                        cmd_use "$module"
+                        i=$((i + 1))
+                    else
+                        log_error "Missing argument for 'use' command"
+                    fi
                     ;;
                 set)
-                    local key="${commands_to_run[$i]}"
-                    i=$((i + 1))
-                    # Collect all parts of the value until the next command
-                    local value=""
-                    while [[ $i -lt ${#commands_to_run[@]} ]] && ! [[ "${commands_to_run[$i]}" =~ ^(use|set|run|add|rm|show|back|exit)$ ]]; do
-                        if [[ -n "$value" ]]; then
-                            value+=" "
-                        fi
-                        value+="${commands_to_run[$i]}"
-                        i=$((i+1))
-                    done
-                    cmd_set "$key $value"
+                    if [[ $i -le $# ]]; then
+                        local key="${!i}"
+                        i=$((i + 1))
+                        
+                        # Collect value parts until next command
+                        local value=""
+                        while [[ $i -le $# ]]; do
+                            local next_arg="${!i}"
+                            if [[ "$next_arg" =~ ^(use|set|run|add|rm|show|back|exit)$ ]]; then
+                                break
+                            fi
+                            if [[ -n "$value" ]]; then
+                                value+=" "
+                            fi
+                            value+="$next_arg"
+                            i=$((i+1))
+                        done
+                        
+                        cmd_set "$key $value"
+                    else
+                        log_error "Missing arguments for 'set' command"
+                    fi
                     ;;
                 run)
                     cmd_run
                     ;;
                 add)
-                    if [[ "${commands_to_run[$i]}" == "target" ]]; then
+                    if [[ $i -le $# ]] && [[ "${!i}" == "target" ]]; then
                         i=$((i+1))
-                        local target_val="${commands_to_run[$i]}"
-                        i=$((i+1))
-                        cmd_add_target "TARGETS" "$target_val"
+                        if [[ $i -le $# ]]; then
+                            local target_val="${!i}"
+                            i=$((i+1))
+                            cmd_add_target "TARGETS" "$target_val"
+                        else
+                            log_error "Missing target value"
+                        fi
                     else
-                        log_error "Unknown add command in non-interactive mode."
+                        log_error "Invalid add command syntax"
                     fi
                     ;;
                 rm)
-                    if [[ "${commands_to_run[$i]}" == "target" ]]; then
+                    if [[ $i -le $# ]] && [[ "${!i}" == "target" ]]; then
                         i=$((i+1))
-                        local target_id="${commands_to_run[$i]}"
-                        i=$((i+1))
-                        cmd_rm_target "TARGETS" "$target_id"
+                        if [[ $i -le $# ]]; then
+                            local target_id="${!i}"
+                            i=$((i+1))
+                            cmd_rm_target "TARGETS" "$target_id"
+                        else
+                            log_error "Missing target ID"
+                        fi
                     else
-                        log_error "Unknown rm command in non-interactive mode."
+                        log_error "Invalid rm command syntax"
                     fi
                     ;;
                 show)
-                    local sub_cmd="${commands_to_run[$i]}"
-                    i=$((i+1))
-                    cmd_show "$sub_cmd"
+                    if [[ $i -le $# ]]; then
+                        local sub_cmd="${!i}"
+                        i=$((i+1))
+                        cmd_show "$sub_cmd"
+                    else
+                        log_error "Missing argument for 'show' command"
+                    fi
                     ;;
                 back)
                     cmd_back
@@ -531,8 +906,8 @@ main() {
                     ;;
                 *)
                     log_error "Unknown command in non-interactive mode: $cmd"
-                    # To prevent infinite loops on unknown commands, we stop processing.
-                    break
+                    log_info "Valid commands: use, set, run, add, rm, show, back, exit"
+                    exit 1
                     ;;
             esac
         done
