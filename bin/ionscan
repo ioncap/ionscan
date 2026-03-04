@@ -9,13 +9,19 @@
 #
 #  IMPROVEMENTS:
 #  - Fixed eval security vulnerability
-#  - Added comprehensive input validation
+#  - Parameterized database writes (SQL injection fix)
+#  - Added comprehensive input validation (strict octet ranges)
 #  - Improved error handling with traps
-#  - Better logging with timestamps and log files
-#  - Refactored option parsing to reduce duplication
-#  - Added history support for interactive shell
-#  - Improved non-interactive mode parsing
-#  - Added safety checks for auto-run mode
+#  - Better logging with timestamps, log files, and LOG_LEVEL support
+#  - Session persistence (save/load session)
+#  - Module enable-flag enforcement
+#  - Color-coded show options
+#  - Run history + replay
+#  - Multi-target "run all"
+#  - Diff mode (change detection)
+#  - Tool pre-flight checks
+#  - Progress bar spinner for long-running scans
+#  - --dry-run flag
 # ==============================================================================
 
 # --- STRICT MODE & TRAP SETUP ---
@@ -37,23 +43,28 @@ trap 'log_error "Script interrupted by user"; exit 130' INT TERM
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
 
 # Libraries with error checking
-source "$INSTALL_DIR/lib/ui.sh" || { 
-    echo "ERROR: Failed to load ui.sh"; exit 1; 
+source "$INSTALL_DIR/lib/ui.sh" || {
+    echo "ERROR: Failed to load ui.sh"; exit 1;
 }
-source "$INSTALL_DIR/lib/core.sh" || { 
-    echo "ERROR: Failed to load core.sh"; exit 1; 
+source "$INSTALL_DIR/lib/core.sh" || {
+    echo "ERROR: Failed to load core.sh"; exit 1;
 }
-source "$INSTALL_DIR/lib/network.sh" || { 
-    echo "ERROR: Failed to load network.sh"; exit 1; 
+source "$INSTALL_DIR/lib/network.sh" || {
+    echo "ERROR: Failed to load network.sh"; exit 1;
 }
-source "$INSTALL_DIR/lib/database.sh" || { 
-    echo "ERROR: Failed to load database.sh"; exit 1; 
+source "$INSTALL_DIR/lib/database.sh" || {
+    echo "ERROR: Failed to load database.sh"; exit 1;
 }
 
 # --- CONFIGURATION ---
-VALID_MODULE_CATEGORIES=("recon" "exploit" "report" "post" "auxiliary")
-HISTFILE="${CONFIG_DIR:-.}/.ionscan_history"
+VALID_MODULE_CATEGORIES=("recon" "exploit" "wireless" "utils" "report" "post" "auxiliary")
+HISTFILE="${LOG_DIR}/.ionscan_history"
 HISTSIZE=1000
+SESSION_FILE="${HOME}/.ionscan_session"
+
+# Global dry-run flag (set via --dry-run)
+DRY_RUN="${DRY_RUN:-false}"
+export DRY_RUN
 
 # --- STATE VARIABLES ---
 CURRENT_MODULE=""
@@ -67,7 +78,7 @@ declare -A TARGETS=([0]="demo.ionscan.org")
 parse_module_option() {
     local option_details="$1"
     local field="$2"
-    
+
     case "$field" in
         description)
             echo "$option_details" | grep -oP "(?<=description=')[^']*" || echo ""
@@ -87,39 +98,44 @@ parse_module_option() {
     esac
 }
 
-# Validate input based on type
+# Validate input based on type with strict checks
 # Usage: validate_input "value" "type"
 # Returns: 0 if valid, 1 if invalid
 validate_input() {
     local value="$1"
     local type="${2:-string}"
-    
+
     case "$type" in
         ip)
-            [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && return 0
+            validate_ip "$value" && return 0
             ;;
         cidr)
-            [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] && return 0
+            # Must have a slash
+            [[ "$value" == */* ]] && validate_ip "$value" && return 0
             ;;
         ip_or_cidr|target)
-            [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$ ]] && return 0
+            validate_ip "$value" && return 0
             [[ "$value" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] && return 0
             ;;
         port)
             [[ "$value" =~ ^[0-9]+$ ]] && (( value >= 1 && value <= 65535 )) && return 0
             ;;
         port_range)
-            [[ "$value" =~ ^[0-9]+-[0-9]+$ ]] && return 0
+            if [[ "$value" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+                local lo="${BASH_REMATCH[1]}" hi="${BASH_REMATCH[2]}"
+                (( lo >= 1 && hi <= 65535 && lo <= hi )) && return 0
+            fi
+            # Also accept comma-separated lists of ports/ranges
+            [[ "$value" =~ ^[0-9,\-]+$ ]] && return 0
             ;;
         boolean)
             [[ "$value" =~ ^(true|false|yes|no|1|0)$ ]] && return 0
             ;;
         string|*)
-            # String is always valid (but we still sanitize)
             return 0
             ;;
     esac
-    
+
     return 1
 }
 
@@ -127,7 +143,6 @@ validate_input() {
 # Usage: sanitize_input "value"
 sanitize_input() {
     local value="$1"
-    # Remove potentially dangerous characters
     echo "$value" | sed 's/[;&|`$()]//g'
 }
 
@@ -141,6 +156,72 @@ get_options_array_name() {
     echo "${name^^}"
 }
 
+# Check if a module category is enabled in config
+is_category_enabled() {
+    local category="${1^^}"
+    local key="MODULE_${category}_ENABLED"
+    local val; val=$(get_config "$key" 2>/dev/null || echo "true")
+    [[ "${val,,}" != "false" && "$val" != "0" ]]
+}
+
+# Return module's REQUIRED_TOOLS declaration (if any)
+# Modules may define REQUIRED_TOOLS_<CATEGORY>_<NAME>=("tool1" "tool2")
+get_required_tools() {
+    local module="${1:-$CURRENT_MODULE}"
+    local arr_name="REQUIRED_TOOLS_${module//\//_}"
+    arr_name="${arr_name^^}"
+    if declare -p "$arr_name" &>/dev/null; then
+        declare -n _tools_ref="$arr_name"
+        echo "${_tools_ref[*]}"
+    fi
+}
+
+# Pre-flight: check that all REQUIRED_TOOLS for a module are available
+preflight_check() {
+    local module="${1:-$CURRENT_MODULE}"
+    local tools_str; tools_str=$(get_required_tools "$module")
+    if [[ -z "$tools_str" ]]; then return 0; fi
+    local missing=()
+    for t in $tools_str; do
+        if ! command -v "$t" &>/dev/null; then
+            missing+=("$t")
+        fi
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        log_error "Missing required tools for $module: ${missing[*]}"
+        return 1
+    fi
+    return 0
+}
+
+# --- SESSION PERSISTENCE ---
+cmd_save_session() {
+    log_info "Saving session to $SESSION_FILE..."
+    {
+        echo "# IonScan session - $(date)"
+        echo "CURRENT_MODULE='${CURRENT_MODULE}'"
+        for key in "${!MODULE_OPTIONS[@]}"; do
+            printf "MODULE_OPTIONS[%s]='%s'\n" "$key" "${MODULE_OPTIONS[$key]}"
+        done
+        for id in "${!TARGETS[@]}"; do
+            printf "TARGETS[%s]='%s'\n" "$id" "${TARGETS[$id]}"
+        done
+    } > "$SESSION_FILE"
+    log_success "Session saved."
+}
+
+cmd_load_session() {
+    if [[ ! -f "$SESSION_FILE" ]]; then
+        log_warning "No session file found at $SESSION_FILE"
+        return 1
+    fi
+    log_info "Loading session from $SESSION_FILE..."
+    # Source into current shell safely (file was written by us)
+    # shellcheck source=/dev/null
+    source "$SESSION_FILE" || { log_error "Failed to load session."; return 1; }
+    log_success "Session loaded. Current module: ${CURRENT_MODULE:-none}"
+}
+
 # --- COMMAND HANDLERS ---
 
 cmd_help() {
@@ -148,17 +229,28 @@ cmd_help() {
     echo "====================================="
     echo ""
     echo -e "${BOLD}Core Commands:${NC}"
-    echo "  help              Show this help message"
-    echo "  show modules      List all available modules"
-    echo "  show options      Show options for the current module"
-    echo "  show targets      Show the current list of targets"
-    echo "  add target <ip>   Add a target to the target list"
-    echo "  rm target <id>    Remove a target from the list"
-    echo "  use <module>      Select a module to use (e.g., 'use recon/fast_scan')"
-    echo "  set <key> <val>   Set an option for the current module"
-    echo "  run               Run the current module"
-    echo "  back              Deselect the current module"
-    echo "  exit              Exit IonScan"
+    echo "  help                Show this help message"
+    echo "  show modules        List all available modules"
+    echo "  show options        Show options for the current module"
+    echo "  show targets        Show the current list of targets"
+    echo "  show history        Show recent module run history"
+    echo "  add target <ip>     Add a target to the target list"
+    echo "  rm target <id>      Remove a target from the list"
+    echo "  use <module>        Select a module to use (e.g., 'use recon/fast_scan')"
+    echo "  set <key> <val>     Set an option for the current module"
+    echo "  run                 Run the current module (single target)"
+    echo "  run all             Run the current module against all targets"
+    echo "  run diff            Run and show what changed vs the last scan"
+    echo "  replay <run_id>     Replay a previous run by ID"
+    echo "  save session        Save current module/target state"
+    echo "  load session        Load previously saved state"
+    echo "  back                Deselect the current module"
+    echo "  exit                Exit IonScan"
+    echo ""
+    echo -e "${BOLD}Schedule Commands (utils/cron):${NC}"
+    echo "  use utils/cron"
+    echo "  set SCHEDULE daily|weekly"
+    echo "  run   (writes crontab entry)"
     echo ""
     echo -e "${BOLD}Tips:${NC}"
     echo "  - Press TAB for command completion"
@@ -178,27 +270,32 @@ cmd_show() {
         modules)
             echo -e "${BOLD}Available Modules:${NC}"
             echo "===================="
-            
+
             local modules_dir="$INSTALL_DIR/modules"
             if [[ ! -d "$modules_dir" ]]; then
                 log_error "Modules directory not found: $modules_dir"
                 return 1
             fi
-            
+
             local files
             files=$(find "$modules_dir" -type f -name "*.sh" 2>/dev/null | sort)
-            
+
             if [[ -z "$files" ]]; then
                 log_warning "No modules found in $modules_dir"
                 return 0
             fi
-            
+
             for file in $files; do
                 local category
                 category=$(basename "$file" .sh)
                 local mods
                 mods=$(grep -oP '(?<=^mod_)[a-zA-Z0-9_]+' "$file" 2>/dev/null || true)
                 if [[ -n "$mods" ]]; then
+                    # Check module-category enable flag
+                    if ! is_category_enabled "$category"; then
+                        echo -e "  ${CYAN}${category}${NC}: ${YELLOW}[DISABLED in config]${NC}"
+                        continue
+                    fi
                     echo -e "  ${CYAN}${category}${NC}:"
                     for mod in $mods; do
                         echo "    - $category/$mod"
@@ -206,16 +303,16 @@ cmd_show() {
                 fi
             done
             echo ""
-            ;; 
+            ;;
         options)
             if [[ -z "$CURRENT_MODULE" ]]; then
                 log_error "No module is currently loaded. Use 'use <module>' first."
                 return 1
             fi
-            
+
             echo -e "${BOLD}Module Options for: ${RED}${CURRENT_MODULE}${NC}"
             echo "================================================="
-            
+
             local options_array_name
             options_array_name=$(get_options_array_name) || {
                 log_error "Failed to get options array name"
@@ -228,29 +325,37 @@ cmd_show() {
             fi
 
             declare -n ref_options_array="$options_array_name"
-            
-            printf "  %-15s %-20s %-10s %-10s %s\n" "Name" "Current Setting" "Required" "Type" "Description"
-            printf "  %-15s %-20s %-10s %-10s %s\n" "----" "---------------" "--------" "----" "-----------"
-            
+
+            printf "  %-15s %-22s %-10s %-10s %s\n" "Name" "Current Setting" "Required" "Type" "Description"
+            printf "  %-15s %-22s %-10s %-10s %s\n" "----" "---------------" "--------" "----" "-----------"
+
             for key in "${!ref_options_array[@]}"; do
                 local option_details="${ref_options_array[$key]}"
-                
-                local description
-                description=$(parse_module_option "$option_details" "description")
-                local required
-                required=$(parse_module_option "$option_details" "required")
-                local default_val
-                default_val=$(parse_module_option "$option_details" "default")
-                local type_val
-                type_val=$(parse_module_option "$option_details" "type")
-                
+
+                local description; description=$(parse_module_option "$option_details" "description")
+                local required;    required=$(parse_module_option "$option_details" "required")
+                local default_val; default_val=$(parse_module_option "$option_details" "default")
+                local type_val;    type_val=$(parse_module_option "$option_details" "type")
+
                 local current_val="${MODULE_OPTIONS[$key]:-$default_val}"
-                [[ -z "$current_val" ]] && current_val="<not set>"
-                
-                printf "  %-15s %-20s %-10s %-10s %s\n" "$key" "$current_val" "$required" "$type_val" "$description"
+
+                # Color-coded: required with no value = RED, has value/default = GREEN, optional unset = DIM
+                local color_start color_end
+                if [[ "$required" == "true" && -z "$current_val" ]]; then
+                    color_start="$RED"; color_end="$NC"
+                    current_val="<not set>"
+                elif [[ -n "$current_val" ]]; then
+                    color_start="$GREEN"; color_end="$NC"
+                else
+                    color_start="${BLUE}"; color_end="$NC"
+                    current_val="<not set>"
+                fi
+
+                printf "  %-15s ${color_start}%-22s${color_end} %-10s %-10s %s\n" \
+                    "$key" "$current_val" "$required" "$type_val" "$description"
             done
             echo ""
-            ;; 
+            ;;
         targets)
             echo -e "${BOLD}Current Targets:${NC}"
             echo "================"
@@ -259,63 +364,60 @@ cmd_show() {
             else
                 printf "  %-5s %s\n" "ID" "Target"
                 printf "  %-5s %s\n" "---" "------"
-                for id in "${!TARGETS[@]}"; do
+                for id in $(echo "${!TARGETS[@]}" | tr ' ' '\n' | sort -n); do
                     printf "  %-5s %s\n" "$id" "${TARGETS[$id]}"
                 done
             fi
             echo ""
-            ;; 
+            ;;
         history)
-            if [[ -f "$HISTFILE" ]]; then
-                echo -e "${BOLD}Command History:${NC}"
-                echo "================"
-                cat "$HISTFILE" | tail -n 20
-                echo ""
-            else
-                log_info "No command history available."
-            fi
+            _show_run_history
             ;;
         *)
             log_error "Unknown 'show' command: '$sub_cmd'."
             log_info "Available: modules, options, targets, history"
             return 1
-            ;; 
+            ;;
     esac
+}
+
+_show_run_history() {
+    echo -e "${BOLD}Recent Module Runs:${NC}"
+    echo "====================="
+    if ! db_exec "SELECT id, module, started_at, duration_s, status FROM runs ORDER BY id DESC LIMIT 20;" 2>/dev/null; then
+        log_warning "No run history available (runs table may not exist yet)."
+    fi
+    echo ""
 }
 
 cmd_add_target() {
     local -n targets_ref="$1"
     local target_to_add="$2"
-    
+
     if [[ -z "$target_to_add" ]]; then
         log_error "Usage: add target <ip/domain/cidr>"
         return 1
     fi
-    
-    # Validate target format
+
     if ! validate_input "$target_to_add" "target"; then
         log_error "Invalid target format: '$target_to_add'"
         log_info "Valid formats: IP (192.168.1.1), CIDR (192.168.1.0/24), or domain (example.com)"
         return 1
     fi
-    
-    # Check for duplicates
+
     for id in "${!targets_ref[@]}"; do
         if [[ "${targets_ref[$id]}" == "$target_to_add" ]]; then
             log_warning "Target '$target_to_add' already exists with ID $id"
             return 0
         fi
     done
-    
-    # Find next available ID
+
     local max_id=0
     for id in "${!targets_ref[@]}"; do
-        if (( id > max_id )); then
-            max_id=$id
-        fi
+        if (( id > max_id )); then max_id=$id; fi
     done
     local next_id=$(( max_id + 1 ))
-    
+
     targets_ref[$next_id]="$target_to_add"
     log_success "Added target $next_id: $target_to_add"
 }
@@ -323,18 +425,17 @@ cmd_add_target() {
 cmd_rm_target() {
     local -n targets_ref="$1"
     local target_id_to_remove="$2"
-    
+
     if [[ -z "$target_id_to_remove" ]]; then
         log_error "Usage: rm target <id>"
         return 1
     fi
-    
-    # Validate ID is numeric
+
     if ! [[ "$target_id_to_remove" =~ ^[0-9]+$ ]]; then
         log_error "Invalid target ID: '$target_id_to_remove' (must be numeric)"
         return 1
     fi
-    
+
     if [[ -v "targets_ref[$target_id_to_remove]" ]]; then
         local target_value="${targets_ref[$target_id_to_remove]}"
         unset "targets_ref[$target_id_to_remove]"
@@ -348,19 +449,18 @@ cmd_rm_target() {
 
 cmd_use() {
     local module_name="$1"
-    
-    # Validate module name format
+
     if ! [[ "$module_name" =~ ^[a-zA-Z0-9_]+/[a-zA-Z0-9_]+$ ]]; then
         log_error "Invalid module name format. Should be 'category/module'."
         log_info "Example: use recon/fast_scan"
         return 1
     fi
-    
+
     local module_category
     module_category=$(echo "$module_name" | cut -d'/' -f1)
     local module_sub_name
     module_sub_name=$(echo "$module_name" | cut -d'/' -f2)
-    
+
     # Validate category is in whitelist
     local valid_category=false
     for cat in "${VALID_MODULE_CATEGORIES[@]}"; do
@@ -369,13 +469,20 @@ cmd_use() {
             break
         fi
     done
-    
+
     if [[ "$valid_category" == "false" ]]; then
         log_error "Invalid module category: '$module_category'"
         log_info "Valid categories: ${VALID_MODULE_CATEGORIES[*]}"
         return 1
     fi
-    
+
+    # Enforce module enable flag from config
+    if ! is_category_enabled "$module_category"; then
+        log_error "Module category '$module_category' is disabled in config."
+        log_info "Edit $CONFIG_FILE and set MODULE_${module_category^^}_ENABLED=true to re-enable."
+        return 1
+    fi
+
     local module_path="$INSTALL_DIR/modules/${module_category}.sh"
 
     if [[ ! -f "$module_path" ]]; then
@@ -383,14 +490,12 @@ cmd_use() {
         log_info "Use 'show modules' to see available modules"
         return 1
     fi
-    
-    # Source the module file
+
     source "$module_path" || {
         log_error "Failed to source module file: $module_path"
         return 1
     }
-    
-    # Check if the sub-module function exists
+
     local func_name="mod_${module_sub_name}"
     if ! command -v "$func_name" >/dev/null 2>&1; then
         log_error "Sub-module '$module_sub_name' not found in '$module_category'."
@@ -398,12 +503,11 @@ cmd_use() {
         grep -oP "(?<=^mod_)[a-zA-Z0-9_]+" "$module_path" 2>/dev/null | sed 's/^/  - /'
         return 1
     fi
-    
-    # Successfully loaded module
+
     CURRENT_MODULE="$module_name"
     MODULE_OPTIONS=()
     log_success "Module '$module_name' loaded."
-    
+
     # Load default values from module options
     local options_array_name
     options_array_name=$(get_options_array_name)
@@ -438,12 +542,12 @@ cmd_set() {
     key=$(echo "$args_line" | awk '{print $1}')
     local value
     value=$(echo "$args_line" | cut -d' ' -f2-)
-    
+
     if [[ -z "$key" || -z "$value" || "$key" == "$value" ]]; then
         log_error "Usage: set <option_name> <value>"
         return 1
     fi
-    
+
     # Alias RHOSTS to TARGET for Metasploit compatibility
     if [[ "$key" == "RHOSTS" ]]; then
         key="TARGET"
@@ -454,51 +558,91 @@ cmd_set() {
         log_error "No module loaded. Use 'use <module>' first."
         return 1
     fi
-    
+
     local options_array_name
     options_array_name=$(get_options_array_name) || {
         log_error "Failed to get options for current module"
         return 1
     }
-    
+
     if ! declare -p "$options_array_name" &>/dev/null; then
         log_error "Module has no options to set."
         return 1
     fi
-    
+
     declare -n ref_options_array="$options_array_name"
-    
+
     if [[ ! -v "ref_options_array[$key]" ]]; then
         log_error "Unknown option for this module: '$key'"
         log_info "Use 'show options' to see available options"
         return 1
     fi
-    
-    # Get option details for validation
+
     local option_details="${ref_options_array[$key]}"
     local type_val
     type_val=$(parse_module_option "$option_details" "type")
-    
-    # Validate input based on type
+
     if ! validate_input "$value" "$type_val"; then
         log_error "Invalid value '$value' for option '$key' (expected type: $type_val)"
         return 1
     fi
-    
-    # Sanitize the value
+
     local sanitized_value
     sanitized_value=$(sanitize_input "$value")
-    
+
     MODULE_OPTIONS[$key]="$sanitized_value"
     log_success "$key => $sanitized_value"
 }
 
+# Snapshot current DB state for a target (used by diff mode)
+_snapshot_db() {
+    local target="$1"
+    local snap_file="$TMP_DIR/snap_${target//[^a-zA-Z0-9]/_}.json"
+    db_exec "SELECT h.ip_address, p.port_number, p.protocol, p.service_name, p.state
+             FROM hosts h JOIN ports p ON h.id = p.host_id
+             WHERE h.ip_address = '$target';" 2>/dev/null > "$snap_file" || true
+    echo "$snap_file"
+}
+
+# Compare two snapshot files and print NEW/GONE/CHANGED
+_diff_snapshots() {
+    local before="$1"
+    local after="$2"
+
+    if [[ ! -f "$before" ]] || [[ ! -f "$after" ]]; then
+        log_warning "Snapshot files missing, cannot diff."
+        return
+    fi
+
+    local added; added=$(comm -13 <(sort "$before") <(sort "$after"))
+    local removed; removed=$(comm -23 <(sort "$before") <(sort "$after"))
+
+    if [[ -z "$added" && -z "$removed" ]]; then
+        log_info "[DIFF] No changes detected."
+        return
+    fi
+
+    if [[ -n "$added" ]]; then
+        echo -e "${GREEN}[NEW]${NC}"
+        echo "$added" | sed 's/^/  + /'
+    fi
+    if [[ -n "$removed" ]]; then
+        echo -e "${RED}[GONE]${NC}"
+        echo "$removed" | sed 's/^/  - /'
+    fi
+}
+
 cmd_run() {
+    local run_mode="${1:-single}"  # single | all | diff
+
     if [[ -z "$CURRENT_MODULE" ]]; then
         log_error "No module loaded to run. Use 'use <module>' first."
         return 1
     fi
-    
+
+    # Pre-flight tool check
+    preflight_check "$CURRENT_MODULE" || return 1
+
     local module_sub_name
     module_sub_name=$(echo "$CURRENT_MODULE" | cut -d'/' -f2)
     local func_to_run="mod_${module_sub_name}"
@@ -507,7 +651,7 @@ cmd_run() {
         log_error "Cannot find function '$func_to_run' for module '$CURRENT_MODULE'."
         return 1
     fi
-    
+
     # Validate required options are set
     local options_array_name
     options_array_name=$(get_options_array_name)
@@ -515,42 +659,37 @@ cmd_run() {
     if declare -p "$options_array_name" &>/dev/null; then
         declare -n ref_options_array="$options_array_name"
         local missing_required=()
-        
+
         for key in "${!ref_options_array[@]}"; do
             local option_details="${ref_options_array[$key]}"
             local required
             required=$(parse_module_option "$option_details" "required")
-            
+
             if [[ "$required" == "true" ]]; then
                 if [[ -z "${MODULE_OPTIONS[$key]:-}" ]]; then
                     missing_required+=("$key")
                 fi
             fi
         done
-        
+
         if [[ ${#missing_required[@]} -gt 0 ]]; then
             log_error "Required options not set: ${missing_required[*]}"
             log_info "Use 'show options' to see required options and 'set <option> <value>' to set them."
             return 1
         fi
     fi
-    
-    # Create log file for this run
+
     local timestamp
     timestamp=$(date +%Y%m%d_%H%M%S)
     local log_file="$LOG_DIR/module_${CURRENT_MODULE//\//_}_${timestamp}.log"
-    
-    # Ensure log directory exists
     mkdir -p "$LOG_DIR" 2>/dev/null || true
-    
+
     local start_time
     start_time=$(date +%s)
-    
-    log_info "Running module: $CURRENT_MODULE..."
+
+    log_info "Running module: $CURRENT_MODULE (mode: $run_mode)..."
     log_info "Logging to: $log_file"
-    
-    # Run the module function directly (NO EVAL!)
-    # Redirect output to both console and log file
+
     {
         echo "=== Module Run: $CURRENT_MODULE ==="
         echo "=== Timestamp: $(date) ==="
@@ -560,36 +699,130 @@ cmd_run() {
         done
         echo "=== Output: ==="
     } | tee "$log_file"
-    
-    # Execute module function with error handling
-    if "$func_to_run" 2>&1 | tee -a "$log_file"; then
-        local end_time
-        end_time=$(date +%s)
-        local duration=$((end_time - start_time))
-        
-        log_success "Module completed successfully in ${duration}s"
+
+    local run_exit_code=0
+
+    if [[ "$run_mode" == "all" ]]; then
+        # Multi-target batch run
+        if [[ ${#TARGETS[@]} -eq 0 ]]; then
+            log_error "No targets in target list. Use 'add target <ip>' first."
+            return 1
+        fi
+        local original_target="${MODULE_OPTIONS[TARGET]:-}"
+        for id in $(echo "${!TARGETS[@]}" | tr ' ' '\n' | sort -n); do
+            local t="${TARGETS[$id]}"
+            log_info "--- Running $CURRENT_MODULE against target $id: $t ---"
+            MODULE_OPTIONS[TARGET]="$t"
+            if ! "$func_to_run" 2>&1 | tee -a "$log_file"; then
+                log_error "Module failed for target $t"
+                run_exit_code=1
+            fi
+        done
+        MODULE_OPTIONS[TARGET]="${original_target}"
+
+    elif [[ "$run_mode" == "diff" ]]; then
+        # Diff mode: snapshot before, run, snapshot after, compare
+        local cur_target="${MODULE_OPTIONS[TARGET]:-}"
+        local snap_before=""
+        if [[ -n "$cur_target" ]]; then
+            snap_before=$(_snapshot_db "$cur_target")
+        fi
+
+        if "$func_to_run" 2>&1 | tee -a "$log_file"; then
+            if [[ -n "$cur_target" ]]; then
+                local snap_after
+                snap_after=$(_snapshot_db "$cur_target")
+                echo ""
+                echo -e "${BOLD}=== Diff vs previous snapshot ===${NC}"
+                _diff_snapshots "$snap_before" "$snap_after"
+            fi
+        else
+            run_exit_code=$?
+        fi
+
+    else
+        # Normal single run
+        if "$func_to_run" 2>&1 | tee -a "$log_file"; then
+            run_exit_code=0
+        else
+            run_exit_code=$?
+        fi
+    fi
+
+    local end_time
+    end_time=$(date +%s)
+    local duration=$(( end_time - start_time ))
+
+    # Serialize options for run record
+    local opts_json="{"
+    local first=true
+    for key in "${!MODULE_OPTIONS[@]}"; do
+        $first || opts_json+=","
+        opts_json+="\"$key\":\"${MODULE_OPTIONS[$key]}\""
+        first=false
+    done
+    opts_json+="}"
+
+    local run_status="success"
+    if [[ $run_exit_code -ne 0 ]]; then run_status="failed"; fi
+
+    # Record to runs table (best-effort)
+    db_insert_run "$CURRENT_MODULE" "$duration" "$run_status" "$opts_json" 2>/dev/null || true
+
+    if [[ $run_exit_code -eq 0 ]]; then
+        log_success "Module completed in ${duration}s"
         echo "=== Completed at: $(date) ===" | tee -a "$log_file"
     else
-        local exit_code=$?
-        local end_time
-        end_time=$(date +%s)
-        local duration=$((end_time - start_time))
-        
-        log_error "Module failed with exit code $exit_code after ${duration}s"
-        echo "=== Failed at: $(date) with exit code $exit_code ===" | tee -a "$log_file"
-        return $exit_code
+        log_error "Module failed (exit $run_exit_code) after ${duration}s"
+        echo "=== Failed at: $(date) ===" | tee -a "$log_file"
+        return $run_exit_code
     fi
+}
+
+# Replay a previous run by its ID from the runs table
+cmd_replay() {
+    local run_id="$1"
+    if [[ -z "$run_id" || ! "$run_id" =~ ^[0-9]+$ ]]; then
+        log_error "Usage: replay <run_id>"
+        return 1
+    fi
+
+    local row
+    row=$(db_exec "SELECT module, options_json FROM runs WHERE id = $run_id;" 2>/dev/null)
+    if [[ -z "$row" ]]; then
+        log_error "No run found with ID $run_id"
+        return 1
+    fi
+
+    local module; module=$(echo "$row" | cut -d'|' -f1)
+    local opts_json; opts_json=$(echo "$row" | cut -d'|' -f2)
+
+    log_info "Replaying run $run_id: module=$module"
+
+    cmd_use "$module" || return 1
+
+    # Parse JSON key:value pairs and re-apply (simple naive parser for our format)
+    while IFS= read -r pair; do
+        local k v
+        k=$(echo "$pair" | sed 's/^"\(.*\)":.*/\1/')
+        v=$(echo "$pair" | sed 's/.*:"\(.*\)"$/\1/')
+        [[ -n "$k" && -n "$v" ]] && MODULE_OPTIONS["$k"]="$v"
+    done < <(echo "$opts_json" | grep -oP '"[^"]+":"[^"]*"')
+
+    cmd_run
 }
 
 # --- INTERACTIVE SHELL ---
 
 interactive_shell() {
-    # Enable command history
     set -o history
-    
-    # Simple tab completion for main commands
-    # Note: Full tab completion requires more complex readline integration
-    
+
+    # Auto-load session if it exists
+    if [[ -f "$SESSION_FILE" ]]; then
+        log_info "Auto-loading session from $SESSION_FILE..."
+        cmd_load_session 2>/dev/null || true
+    fi
+
     while true; do
         local prompt="ionscan"
         if [[ -n "$CURRENT_MODULE" ]]; then
@@ -599,17 +832,14 @@ interactive_shell() {
 
         read -rep "$prompt" line
 
-        # Add to history if non-empty
         if [[ -n "$line" ]]; then
             history -s "$line"
         fi
 
-        # Parse command and arguments
         local cmd
         local args
         read -r cmd args <<< "$line"
 
-        # Handle commands
         case "$cmd" in
             help|"?")
                 cmd_help
@@ -638,7 +868,29 @@ interactive_shell() {
                 cmd_set "$args"
                 ;;
             run)
-                cmd_run
+                case "${args:-}" in
+                    all)  cmd_run "all"  ;;
+                    diff) cmd_run "diff" ;;
+                    "")   cmd_run "single" ;;
+                    *)    log_error "Unknown run mode: '$args'. Valid: (empty), all, diff" ;;
+                esac
+                ;;
+            replay)
+                cmd_replay "${args:-}"
+                ;;
+            save)
+                if [[ "${args:-}" == "session" ]]; then
+                    cmd_save_session
+                else
+                    log_error "Usage: save session"
+                fi
+                ;;
+            load)
+                if [[ "${args:-}" == "session" ]]; then
+                    cmd_load_session
+                else
+                    log_error "Usage: load session"
+                fi
                 ;;
             back)
                 cmd_back
@@ -647,7 +899,6 @@ interactive_shell() {
                 cmd_exit
                 ;;
             "")
-                # Empty command, do nothing
                 ;;
             *)
                 log_error "Unknown command: '$cmd'. Type 'help' for a list of commands."
@@ -661,7 +912,7 @@ interactive_shell() {
 run_setup() {
     log_info "Running setup..."
     local missing_deps=()
-    local deps_to_check=( "nmap" "sqlite3" "nbtscan" )
+    local deps_to_check=( "nmap" "sqlite3" "nbtscan" "flock" "python3" )
 
     log_info "Checking for required dependencies..."
     for dep in "${deps_to_check[@]}"; do
@@ -696,20 +947,8 @@ run_setup() {
         fi
     elif command -v yum &> /dev/null; then
         sudo yum install -y "${missing_deps[@]}"
-        if [[ $? -eq 0 ]]; then
-            log_success "Dependencies installed successfully using yum."
-        else
-            log_error "Failed to install dependencies using yum."
-            exit 1
-        fi
     elif command -v dnf &> /dev/null; then
         sudo dnf install -y "${missing_deps[@]}"
-        if [[ $? -eq 0 ]]; then
-            log_success "Dependencies installed successfully using dnf."
-        else
-            log_error "Failed to install dependencies using dnf."
-            exit 1
-        fi
     else
         log_error "No supported package manager found. Please install dependencies manually."
         exit 1
@@ -721,10 +960,9 @@ run_setup() {
 # --- MAIN ENTRY ---
 
 main() {
-    # Handle command-line arguments
     local remaining_args=()
     local auto_run=false
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --setup)
@@ -743,26 +981,30 @@ main() {
                 auto_run=true
                 shift
                 ;;
+            --dry-run)
+                DRY_RUN=true
+                export DRY_RUN
+                log_warning "DRY-RUN mode enabled: commands will be printed but not executed."
+                shift
+                ;;
             *)
                 remaining_args+=("$1")
                 shift
                 ;;
         esac
     done
-    
-    # Restore non-flag arguments
+
     set -- "${remaining_args[@]}"
 
-    # Auto-run mode setup with safety checks
     if [[ "$auto_run" == "true" ]]; then
         get_interface 2>/dev/null || true
         local local_subnet
         local_subnet=$(echo "${MY_IP:-192.168.1.0}" | cut -d'.' -f1-3).0/24
-        
+
         log_warning "AUTO MODE ENABLED"
         log_warning "This will scan local subnet: $local_subnet"
         log_warning "This may trigger IDS/IPS systems and network monitoring alerts!"
-        
+
         if [[ "${AGREED:-}" != "true" ]]; then
             read -rp "Continue with auto-run? [y/N] " choice
             if [[ ! "$choice" =~ ^[Yy]$ ]]; then
@@ -770,7 +1012,7 @@ main() {
                 exit 1
             fi
         fi
-        
+
         set -- "use" "recon/fast_scan" "set" "TARGET" "$local_subnet" "run" \
                "use" "exploit/advanced_vuln" "set" "TARGET" "$local_subnet" "run" \
                "use" "report/report" "set" "AUTO_OPEN" "true" "run" "$@"
@@ -780,7 +1022,6 @@ main() {
     setup_config 2>/dev/null || true
     db_init 2>/dev/null || log_warning "Database initialization failed"
 
-    # Check and fix log directory permissions
     if [[ -d "${LOG_DIR:-}" ]] && [[ ! -w "${LOG_DIR:-}" ]]; then
         local owner="${SUDO_USER:-$(whoami)}"
         log_warning "Log directory not writable. Attempting to fix with 'sudo chown'..."
@@ -789,41 +1030,36 @@ main() {
         }
     fi
 
-    # Start interactive or non-interactive mode
     if [[ $# -eq 0 ]]; then
-        # Interactive mode
         header 2>/dev/null || echo "=== IonScan v24.0 ==="
-        
-        # Disclaimer check
+
         if [[ "${AGREED:-}" != "true" ]]; then
             echo -e "${RED}${BOLD}DISCLAIMER${NC}"
             echo "This tool is for educational and authorized use only."
             echo "Unauthorized network scanning is illegal."
             echo ""
             read -rp "Do you agree to use this tool responsibly? [y/N] " A
-            if [[ ! "$A" =~ ^[Yy]$ ]]; then 
+            if [[ ! "$A" =~ ^[Yy]$ ]]; then
                 log_error "You must agree to the terms to use this tool."
                 exit 1
             fi
         fi
-        
+
         interactive_shell
     else
-        # Non-interactive mode
         header 2>/dev/null || echo "=== IonScan v24.0 ==="
-        
+
         if [[ "${AGREED:-}" != "true" ]]; then
             log_error "DISCLAIMER: This tool is for educational and authorized use only."
             log_error "Run with the --agree flag to accept the terms."
             exit 1
         fi
 
-        # Execute commands from arguments
         local i=0
         while [[ $i -lt $# ]]; do
             local cmd="${!i}"
             i=$((i + 1))
-            
+
             case "$cmd" in
                 use)
                     if [[ $i -le $# ]]; then
@@ -838,28 +1074,33 @@ main() {
                     if [[ $i -le $# ]]; then
                         local key="${!i}"
                         i=$((i + 1))
-                        
-                        # Collect value parts until next command
+
                         local value=""
                         while [[ $i -le $# ]]; do
                             local next_arg="${!i}"
                             if [[ "$next_arg" =~ ^(use|set|run|add|rm|show|back|exit)$ ]]; then
                                 break
                             fi
-                            if [[ -n "$value" ]]; then
-                                value+=" "
-                            fi
+                            if [[ -n "$value" ]]; then value+=" "; fi
                             value+="$next_arg"
                             i=$((i+1))
                         done
-                        
+
                         cmd_set "$key $value"
                     else
                         log_error "Missing arguments for 'set' command"
                     fi
                     ;;
                 run)
-                    cmd_run
+                    local run_sub=""
+                    if [[ $i -le $# ]]; then
+                        local peek="${!i}"
+                        if [[ "$peek" == "all" || "$peek" == "diff" ]]; then
+                            run_sub="$peek"
+                            i=$((i+1))
+                        fi
+                    fi
+                    cmd_run "${run_sub:-single}"
                     ;;
                 add)
                     if [[ $i -le $# ]] && [[ "${!i}" == "target" ]]; then
