@@ -8,21 +8,21 @@
 
 # Options for mod_mac
 declare -gA MOD_OPTIONS_UTILS_MAC
-MOD_OPTIONS_UTILS_MAC[INTERFACE]="description='Interface to change MAC address on' required=true default='$DEFAULT_IFACE'"
+MOD_OPTIONS_UTILS_MAC[INTERFACE]="description='Interface to change MAC address on' required=true default='$DEFAULT_IFACE' type='string' example='eth0'"
 
 # Options for mod_ssl
 declare -gA MOD_OPTIONS_UTILS_SSL
-MOD_OPTIONS_UTILS_SSL[TARGET]="description='Target IP or "all"' required=true"
-MOD_OPTIONS_UTILS_SSL[PORT]="description='Port to check SSL on' required=false default='443'"
+MOD_OPTIONS_UTILS_SSL[TARGET]="description='Target IP or "all"' required=true type='target' example='192.168.1.20'"
+MOD_OPTIONS_UTILS_SSL[PORT]="description='Port to check SSL on' required=false default='443' type='port' example='443'"
 
 # Options for mod_serve
 declare -gA MOD_OPTIONS_UTILS_SERVE
-MOD_OPTIONS_UTILS_SERVE[PORT]="description='Port to serve files on' required=false default='8080'"
+MOD_OPTIONS_UTILS_SERVE[PORT]="description='Port to serve files on' required=false default='8080' type='port' example='8080'"
 
 # Options for mod_decoy
 declare -gA MOD_OPTIONS_UTILS_DECOY
-MOD_OPTIONS_UTILS_DECOY[TARGET]="description='Target IP or "all"' required=true"
-MOD_OPTIONS_UTILS_DECOY[DECOYS]="description='Number of decoys to use' required=false default='10'"
+MOD_OPTIONS_UTILS_DECOY[TARGET]="description='Target IP or "all"' required=true type='target' example='192.168.1.0/24'"
+MOD_OPTIONS_UTILS_DECOY[DECOYS]="description='Number of decoys to use' required=false default='10' type='string' example='5'"
 
 # Options for mod_cron
 # This module will be refactored later to be configurable via options.

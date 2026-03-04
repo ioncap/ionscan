@@ -10,6 +10,20 @@ IonScan is a modular bash-based script for network discovery, vulnerability scan
 *   **Exploitation Helpers:** Modules for assisting in penetration testing tasks.
 *   **Reporting:** Generates an HTML dashboard of the findings.
 
+
+## Step-by-step: voorbeeldopties gebruiken
+
+In de interactieve shell kun je module-opties nu met **type-validatie**, **examples** en optionele **keuzelijsten** gebruiken:
+
+1. `show modules`
+2. `use report/report`
+3. `show options`
+4. `set FORMAT html`
+5. `set AUTO_OPEN false`
+6. `run`
+
+Tip: `show options` toont per optie nu ook een voorbeeldwaarde, zodat je sneller geldige input kiest.
+
 ## Disclaimer
 
 **THIS TOOL IS FOR EDUCATIONAL AND AUTHORIZED USE ONLY.**

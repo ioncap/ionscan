@@ -12,31 +12,31 @@
 
 # Options for mod_passive
 declare -gA MOD_OPTIONS_RECON_PASSIVE
-MOD_OPTIONS_RECON_PASSIVE[INTERFACE]="description='Network interface to listen on' required=true default='$DEFAULT_IFACE'"
-MOD_OPTIONS_RECON_PASSIVE[DURATION]="description='Duration to listen in seconds' required=false default='30'"
+MOD_OPTIONS_RECON_PASSIVE[INTERFACE]="description='Network interface to listen on' required=true default='$DEFAULT_IFACE' type='string' example='eth0'"
+MOD_OPTIONS_RECON_PASSIVE[DURATION]="description='Duration to listen in seconds' required=false default='30' type='string' example='60'"
 
 # Options for mod_fast_scan
 declare -gA MOD_OPTIONS_RECON_FAST_SCAN
-MOD_OPTIONS_RECON_FAST_SCAN[TARGET]="description='Target IP, CIDR, or "all"' required=true"
+MOD_OPTIONS_RECON_FAST_SCAN[TARGET]="description='Target IP, CIDR, or "all"' required=true type='target' example='192.168.1.0/24'"
 
 # Options for mod_dns
 declare -gA MOD_OPTIONS_RECON_DNS
-MOD_OPTIONS_RECON_DNS[DOMAIN]="description='Domain to query' required=true"
+MOD_OPTIONS_RECON_DNS[DOMAIN]="description='Domain to query' required=true type='string' example='example.com'"
 
 # Options for mod_snmp
 declare -gA MOD_OPTIONS_RECON_SNMP
-MOD_OPTIONS_RECON_SNMP[TARGET]="description='Target IP or "all"' required=true"
-MOD_OPTIONS_RECON_SNMP[COMMUNITY]="description='SNMP Community string' required=false default='public'"
+MOD_OPTIONS_RECON_SNMP[TARGET]="description='Target IP or "all"' required=true type='target' example='192.168.1.10'"
+MOD_OPTIONS_RECON_SNMP[COMMUNITY]="description='SNMP Community string' required=false default='public' type='string' example='public'"
 
 # Options for mod_web
 declare -gA MOD_OPTIONS_RECON_WEB
-MOD_OPTIONS_RECON_WEB[TARGET]="description='Target IP, Hostname, or "all"' required=true"
-MOD_OPTIONS_RECON_WEB[WORDLIST]="description='Path to wordlist for gobuster' required=false default='$LOG_DIR/common.txt'"
+MOD_OPTIONS_RECON_WEB[TARGET]="description='Target IP, Hostname, or "all"' required=true type='target' example='scanme.nmap.org'"
+MOD_OPTIONS_RECON_WEB[WORDLIST]="description='Path to wordlist for gobuster' required=false default='$LOG_DIR/common.txt' type='string' example='/usr/share/wordlists/common.txt'"
 
 
 # Options for mod_netbios
 declare -gA MOD_OPTIONS_RECON_NETBIOS
-MOD_OPTIONS_RECON_NETBIOS[SUBNET]="description='Subnet to scan (e.g., 192.168.1.0/24)' required=false default='auto'"
+MOD_OPTIONS_RECON_NETBIOS[SUBNET]="description='Subnet to scan (e.g., 192.168.1.0/24)' required=false default='auto' type='target' example='192.168.1.0/24'"
 
 
 # [1] GHOST WITNESS

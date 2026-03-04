@@ -8,8 +8,8 @@
 
 # Options for mod_report
 declare -gA MOD_OPTIONS_REPORT_REPORT
-MOD_OPTIONS_REPORT_REPORT[FORMAT]="description='Output format (html or json)' required=false default='html'"
-MOD_OPTIONS_REPORT_REPORT[AUTO_OPEN]="description='Automatically open HTML report in browser' required=false default='false'"
+MOD_OPTIONS_REPORT_REPORT[FORMAT]="description='Output format (html or json)' required=false default='html' type='string' choices='html,json' example='html'"
+MOD_OPTIONS_REPORT_REPORT[AUTO_OPEN]="description='Automatically open HTML report in browser' required=false default='false' type='boolean' example='false'"
 
 mod_report() {
     local _output_format="${MODULE_OPTIONS[FORMAT]}"

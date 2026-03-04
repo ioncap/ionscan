@@ -12,7 +12,7 @@
 
 # Options for mod_wifi
 declare -gA MOD_OPTIONS_WIRELESS_WIFI
-MOD_OPTIONS_WIRELESS_WIFI[INTERFACE]="description='Wireless interface for monitoring' required=true default='$DEFAULT_IFACE'"
+MOD_OPTIONS_WIRELESS_WIFI[INTERFACE]="description='Wireless interface for monitoring' required=true default='$DEFAULT_IFACE' type='string' example='wlan0'"
 
 # Options for mod_bt
 # No specific options needed for mod_bt beyond the default behavior.
