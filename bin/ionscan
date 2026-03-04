@@ -60,6 +60,12 @@ CURRENT_MODULE=""
 declare -A MODULE_OPTIONS
 declare -A TARGETS=([0]="demo.ionscan.org")
 
+# Module list cache (rebuilt on first use)
+declare -a _MODULES_CACHE=()
+_MODULES_CACHE_BUILT=false
+# Last displayed numbered module list (enables 'use <number>' shortcuts)
+declare -a LAST_MODULE_LIST=()
+
 # --- UTILITY FUNCTIONS ---
 
 # Parse a single field from module option string
@@ -131,6 +137,29 @@ sanitize_input() {
     echo "$value" | sed 's/[;&|`$()]//g'
 }
 
+# Build a cached list of all available modules (category/name pairs)
+_build_modules_cache() {
+    _MODULES_CACHE=()
+    local modules_dir="$INSTALL_DIR/modules"
+    local file category mod
+    for file in "$modules_dir"/*.sh; do
+        [[ -f "$file" ]] || continue
+        category=$(basename "$file" .sh)
+        while IFS= read -r mod; do
+            _MODULES_CACHE+=("${category}/${mod}")
+        done < <(grep -oP '(?<=^mod_)[a-zA-Z0-9_]+' "$file" 2>/dev/null || true)
+    done
+    _MODULES_CACHE_BUILT=true
+}
+
+# Print all modules, building cache on first call
+_get_all_modules() {
+    if [[ "$_MODULES_CACHE_BUILT" != "true" ]]; then
+        _build_modules_cache
+    fi
+    printf '%s\n' "${_MODULES_CACHE[@]}"
+}
+
 # Get the options array name for current module
 get_options_array_name() {
     local module="${1:-$CURRENT_MODULE}"
@@ -149,19 +178,32 @@ cmd_help() {
     echo ""
     echo -e "${BOLD}Core Commands:${NC}"
     echo "  help              Show this help message"
-    echo "  show modules      List all available modules"
+    echo "  show modules      List all available modules (numbered)"
     echo "  show options      Show options for the current module"
     echo "  show targets      Show the current list of targets"
     echo "  add target <ip>   Add a target to the target list"
     echo "  rm target <id>    Remove a target from the list"
-    echo "  use <module>      Select a module to use (e.g., 'use recon/fast_scan')"
+    echo "  use <module>      Select a module (full path, partial name, or number)"
     echo "  set <key> <val>   Set an option for the current module"
     echo "  run               Run the current module"
     echo "  back              Deselect the current module"
+    echo "  search <term>     Search modules by keyword"
     echo "  exit              Exit IonScan"
     echo ""
+    echo -e "${BOLD}Shortcuts:${NC}"
+    echo "  ls / modules      Alias for 'show modules'"
+    echo "  opts / options    Alias for 'show options'"
+    echo "  targets           Alias for 'show targets'"
+    echo "  use <number>      Select module by number (from 'show modules' list)"
+    echo "  use <partial>     Fuzzy match — e.g., 'use fast_scan' or 'use vuln'"
+    echo ""
+    echo -e "${BOLD}Tab Completion:${NC}"
+    echo "  TAB after 'use'   Complete module names"
+    echo "  TAB after 'set'   Complete option keys for the current module"
+    echo "  TAB after 'show'  Complete subcommand names"
+    echo "  TAB on empty line Complete command names"
+    echo ""
     echo -e "${BOLD}Tips:${NC}"
-    echo "  - Press TAB for command completion"
     echo "  - Use UP/DOWN arrows for command history"
     echo "  - Valid module categories: ${VALID_MODULE_CATEGORIES[*]}"
     echo ""
@@ -178,35 +220,31 @@ cmd_show() {
         modules)
             echo -e "${BOLD}Available Modules:${NC}"
             echo "===================="
-            
-            local modules_dir="$INSTALL_DIR/modules"
-            if [[ ! -d "$modules_dir" ]]; then
-                log_error "Modules directory not found: $modules_dir"
-                return 1
-            fi
-            
-            local files
-            files=$(find "$modules_dir" -type f -name "*.sh" 2>/dev/null | sort)
-            
-            if [[ -z "$files" ]]; then
-                log_warning "No modules found in $modules_dir"
+
+            # Rebuild cache so LAST_MODULE_LIST is fresh
+            _build_modules_cache
+            LAST_MODULE_LIST=()
+
+            if [[ ${#_MODULES_CACHE[@]} -eq 0 ]]; then
+                log_warning "No modules found"
                 return 0
             fi
-            
-            for file in $files; do
-                local category
-                category=$(basename "$file" .sh)
-                local mods
-                mods=$(grep -oP '(?<=^mod_)[a-zA-Z0-9_]+' "$file" 2>/dev/null || true)
-                if [[ -n "$mods" ]]; then
+
+            local prev_category="" n=1 entry category
+            for entry in "${_MODULES_CACHE[@]}"; do
+                category="${entry%%/*}"
+                if [[ "$category" != "$prev_category" ]]; then
                     echo -e "  ${CYAN}${category}${NC}:"
-                    for mod in $mods; do
-                        echo "    - $category/$mod"
-                    done
+                    prev_category="$category"
                 fi
+                printf "    ${BOLD}%2d${NC}  %s\n" "$n" "$entry"
+                LAST_MODULE_LIST+=("$entry")
+                n=$((n + 1))
             done
             echo ""
-            ;; 
+            echo -e "  ${BOLD}Tip:${NC} type 'use <number>' to load a module by its index"
+            echo ""
+            ;;
         options)
             if [[ -z "$CURRENT_MODULE" ]]; then
                 log_error "No module is currently loaded. Use 'use <module>' first."
@@ -348,8 +386,48 @@ cmd_rm_target() {
 
 cmd_use() {
     local module_name="$1"
-    
-    # Validate module name format
+
+    if [[ -z "$module_name" ]]; then
+        log_error "Usage: use <module|number|partial-name>"
+        return 1
+    fi
+
+    # --- Selection by number (from last 'show modules' output) ---
+    if [[ "$module_name" =~ ^[0-9]+$ ]]; then
+        local idx=$(( module_name - 1 ))
+        if [[ $idx -ge 0 && $idx -lt ${#LAST_MODULE_LIST[@]} ]]; then
+            module_name="${LAST_MODULE_LIST[$idx]}"
+            log_info "Selected: $module_name"
+        else
+            log_error "No module #${module_name}. Run 'show modules' to see the list."
+            return 1
+        fi
+    fi
+
+    # --- Fuzzy match: no slash → search by name across categories ---
+    if [[ ! "$module_name" =~ "/" ]]; then
+        local -a candidates=()
+        # Exact name match first (e.g. 'fast_scan' → 'recon/fast_scan')
+        mapfile -t candidates < <(_get_all_modules | grep -i "/${module_name}$" 2>/dev/null || true)
+        # Fall back to substring match if no exact name match
+        if [[ ${#candidates[@]} -eq 0 ]]; then
+            mapfile -t candidates < <(_get_all_modules | grep -i "${module_name}" 2>/dev/null || true)
+        fi
+        if [[ ${#candidates[@]} -eq 1 ]]; then
+            module_name="${candidates[0]}"
+            log_info "Matched: $module_name"
+        elif [[ ${#candidates[@]} -gt 1 ]]; then
+            log_warning "Ambiguous: multiple modules match '${1}':"
+            local c; for c in "${candidates[@]}"; do echo "    $c"; done
+            log_info "Be more specific or use 'show modules' to pick by number."
+            return 1
+        else
+            log_error "No module found matching '${1}'. Try 'search ${1}' or 'show modules'."
+            return 1
+        fi
+    fi
+
+    # --- Validate full category/name format ---
     if ! [[ "$module_name" =~ ^[a-zA-Z0-9_]+/[a-zA-Z0-9_]+$ ]]; then
         log_error "Invalid module name format. Should be 'category/module'."
         log_info "Example: use recon/fast_scan"
@@ -581,15 +659,106 @@ cmd_run() {
     fi
 }
 
+# Search modules by keyword
+cmd_search() {
+    local term="${1:-}"
+    if [[ -z "$term" ]]; then
+        log_error "Usage: search <keyword>"
+        return 1
+    fi
+
+    local -a results=()
+    mapfile -t results < <(_get_all_modules | grep -i "$term" 2>/dev/null || true)
+
+    if [[ ${#results[@]} -eq 0 ]]; then
+        log_warning "No modules found matching '${term}'"
+        return 0
+    fi
+
+    echo -e "${BOLD}Search results for '${term}':${NC}"
+    local n=1 entry
+    for entry in "${results[@]}"; do
+        printf "  ${BOLD}%2d${NC}  %s\n" "$n" "$entry"
+        n=$((n + 1))
+    done
+    echo ""
+}
+
+# Set up readline tab-completion for the interactive shell
+setup_readline_completion() {
+    _ionscan_tab_complete() {
+        local before_cursor="${READLINE_LINE:0:$READLINE_POINT}"
+
+        # Split words; detect whether we're starting a new word (trailing space)
+        local -a words=()
+        read -ra words <<< "$before_cursor"
+        local cur_word=""
+        if [[ ! "$before_cursor" =~ [[:space:]]$ ]]; then
+            cur_word="${words[-1]:-}"
+        fi
+        local prefix="${before_cursor%$cur_word}"
+        local first_word="${words[0]:-}"
+        # num_words counts completed words + partial current word
+        local num_words=${#words[@]}
+        [[ "$before_cursor" =~ [[:space:]]$ ]] && num_words=$(( num_words + 1 ))
+
+        local -a matches=()
+
+        case "$first_word" in
+            ""|help|show|use|set|run|back|exit|quit|add|rm|search|ls|opts|options|targets|info)
+                if [[ $num_words -le 1 ]]; then
+                    # Complete command name
+                    local all_cmds="help show use set run back exit quit add rm search ls opts options targets info"
+                    mapfile -t matches < <(compgen -W "$all_cmds" -- "$cur_word")
+
+                elif [[ "$first_word" == "use" && $num_words -eq 2 ]]; then
+                    # Complete module path
+                    mapfile -t matches < <(_get_all_modules | grep -i "^${cur_word}" 2>/dev/null || true)
+
+                elif [[ "$first_word" == "set" && $num_words -eq 2 ]]; then
+                    # Complete option key for current module
+                    if [[ -n "$CURRENT_MODULE" ]]; then
+                        local opts_array_name
+                        opts_array_name=$(get_options_array_name 2>/dev/null) || return
+                        if declare -p "$opts_array_name" &>/dev/null; then
+                            declare -n _tc_opts="$opts_array_name"
+                            mapfile -t matches < <(printf '%s\n' "${!_tc_opts[@]}" | grep -i "^${cur_word}" 2>/dev/null || true)
+                        fi
+                    fi
+
+                elif [[ "$first_word" == "show" && $num_words -eq 2 ]]; then
+                    mapfile -t matches < <(compgen -W "modules options targets history" -- "$cur_word")
+
+                elif [[ ("$first_word" == "add" || "$first_word" == "rm") && $num_words -eq 2 ]]; then
+                    mapfile -t matches < <(compgen -W "target" -- "$cur_word")
+                fi
+                ;;
+        esac
+
+        if [[ ${#matches[@]} -eq 0 ]]; then
+            return
+        elif [[ ${#matches[@]} -eq 1 ]]; then
+            # Single match — complete in place with a trailing space
+            local completion="${matches[0]}"
+            READLINE_LINE="${prefix}${completion} ${READLINE_LINE:$READLINE_POINT}"
+            READLINE_POINT=$(( ${#prefix} + ${#completion} + 1 ))
+        else
+            # Multiple matches — print list, let readline redraw the prompt
+            echo ""
+            printf '%s\n' "${matches[@]}" | column -c "${COLUMNS:-80}"
+        fi
+    }
+
+    bind -x '"\t": _ionscan_tab_complete'
+}
+
 # --- INTERACTIVE SHELL ---
 
 interactive_shell() {
-    # Enable command history
+    # Enable command history and tab completion
     set -o history
-    
-    # Simple tab completion for main commands
-    # Note: Full tab completion requires more complex readline integration
-    
+    setup_readline_completion
+
     while true; do
         local prompt="ionscan"
         if [[ -n "$CURRENT_MODULE" ]]; then
@@ -605,8 +774,7 @@ interactive_shell() {
         fi
 
         # Parse command and arguments
-        local cmd
-        local args
+        local cmd args
         read -r cmd args <<< "$line"
 
         # Handle commands
@@ -614,6 +782,23 @@ interactive_shell() {
             help|"?")
                 cmd_help
                 ;;
+            # --- Short aliases ---
+            ls|modules)
+                cmd_show "modules"
+                ;;
+            opts|options)
+                cmd_show "options"
+                ;;
+            targets)
+                cmd_show "targets"
+                ;;
+            info)
+                cmd_show "options"
+                ;;
+            search)
+                cmd_search "$args"
+                ;;
+            # --- Standard commands ---
             show)
                 cmd_show "$args"
                 ;;
@@ -647,10 +832,10 @@ interactive_shell() {
                 cmd_exit
                 ;;
             "")
-                # Empty command, do nothing
+                # Empty line — do nothing
                 ;;
             *)
-                log_error "Unknown command: '$cmd'. Type 'help' for a list of commands."
+                log_error "Unknown command: '$cmd'. Type 'help' or '?' for commands."
                 ;;
         esac
     done

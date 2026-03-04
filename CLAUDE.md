@@ -154,18 +154,34 @@ sudo ./bin/ionscan --setup
 ### Interactive Shell Commands
 
 ```
-help                      # Show available commands
-show modules              # List all available modules
+help / ?                  # Show available commands
+show modules              # List all available modules (numbered)
 show options              # Show options for the current module
-use <module>              # Load a module (e.g., use recon/fast_scan)
-set <KEY> <value>         # Set a module option (e.g., set TARGET 192.168.1.0/24)
-run                       # Execute the current module
-add target <ip>           # Add a target to the target list
+show targets              # Show the current target list
+add target <ip>           # Add a target (IP, CIDR, or domain)
 rm target <id>            # Remove a target by ID
-show targets              # List all targets
+use <module>              # Load by full path: use recon/fast_scan
+use <number>              # Load by number from last 'show modules' list
+use <partial>             # Fuzzy match: 'use fast_scan' or 'use vuln'
+set <KEY> <value>         # Set a module option
+run                       # Execute the current module
+search <term>             # Filter modules by keyword
 back                      # Unload the current module
 exit / quit               # Exit the shell
 ```
+
+**Short aliases** (for common operations):
+```
+ls / modules              # Same as 'show modules'
+opts / options / info     # Same as 'show options'
+targets                   # Same as 'show targets'
+```
+
+**Tab completion** is active in the interactive shell:
+- TAB on empty line or partial command → complete command name
+- `use <TAB>` → complete module path
+- `set <TAB>` → complete option key for the current module
+- `show <TAB>` → complete subcommand (`modules`, `options`, `targets`, `history`)
 
 ---
 
