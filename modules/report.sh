@@ -5,47 +5,72 @@
 # ==============================================================================
 
 # Reporting Module Options
-
-# Options for mod_report
 declare -gA MOD_OPTIONS_REPORT_REPORT
-MOD_OPTIONS_REPORT_REPORT[FORMAT]="description='Output format (html or json)' required=false default='html'"
-MOD_OPTIONS_REPORT_REPORT[AUTO_OPEN]="description='Automatically open HTML report in browser' required=false default='false'"
+MOD_OPTIONS_REPORT_REPORT[FORMAT]="description='Output format: html, json, csv, pdf' required=false default='html' type='string'"
+MOD_OPTIONS_REPORT_REPORT[AUTO_OPEN]="description='Automatically open HTML report in browser' required=false default='false' type='boolean'"
+MOD_OPTIONS_REPORT_REPORT[OUTPUT_PATH]="description='Custom output path for csv/pdf (default: auto)' required=false default='' type='string'"
 
 mod_report() {
-    local _output_format="${MODULE_OPTIONS[FORMAT]}"
-    local _auto_open="${MODULE_OPTIONS[AUTO_OPEN]}"
+    local _output_format="${MODULE_OPTIONS[FORMAT]:-html}"
+    local _auto_open="${MODULE_OPTIONS[AUTO_OPEN]:-false}"
+    local _output_path="${MODULE_OPTIONS[OUTPUT_PATH]:-}"
 
     # Prepare environment variables for the Python script
-    export LOG_DIR OUI_DB
-    PUB_IP=$(curl -s --connect-timeout 3 ifconfig.me || echo "Offline"); export PUB_IP
-    GATEWAY=$(ip route | grep default | awk '{print $3}' | head -n1); export GATEWAY
-    DNS_SRV=$(grep "nameserver" /etc/resolv.conf | awk '{print $2}' | head -n1); export DNS_SRV
-    export MY_IP DEFAULT_IFACE # These are already set in lib/core.sh or network.sh
-    export DB_FILE # Export DB_FILE for the python script
+    export LOG_DIR OUI_DB DB_FILE
+    PUB_IP=$(curl -s --connect-timeout 3 ifconfig.me 2>/dev/null || echo "Offline")
+    export PUB_IP
+    GATEWAY=$(ip route | grep default | awk '{print $3}' | head -n1 2>/dev/null || echo "")
+    export GATEWAY
+    DNS_SRV=$(grep "nameserver" /etc/resolv.conf 2>/dev/null | awk '{print $2}' | head -n1 || echo "")
+    export DNS_SRV
+    export MY_IP DEFAULT_IFACE
+
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        log_info "[DRY-RUN] report.py --${_output_format} ..."
+        return 0
+    fi
 
     log_info "Generating report (format: $_output_format)..."
 
-    if [[ "$_output_format" == "json" ]]; then
-        python3 "$INSTALL_DIR/modules/report.py" --json
-        log_success "JSON report generated to stdout."
-    else # HTML output
-        local report_file="$LOG_DIR/dashboard.html"
-        local template_file="$INSTALL_DIR/templates/dashboard.html"
-        
-        python3 "$INSTALL_DIR/modules/report.py" "$template_file" "$report_file"
+    case "${_output_format,,}" in
+        json)
+            python3 "$INSTALL_DIR/modules/report.py" --json
+            log_success "JSON report generated to stdout."
+            ;;
+        csv)
+            local csv_out="${_output_path:-$LOG_DIR/report_$(date +%Y%m%d_%H%M%S).csv}"
+            python3 "$INSTALL_DIR/modules/report.py" --csv "$csv_out"
+            log_success "CSV report generated: $csv_out"
+            ;;
+        pdf)
+            local template_file="$INSTALL_DIR/templates/dashboard.html"
+            local pdf_out="${_output_path:-$LOG_DIR/report_$(date +%Y%m%d_%H%M%S).pdf}"
+            python3 "$INSTALL_DIR/modules/report.py" --pdf "$template_file" "$pdf_out"
+            log_success "PDF report generated: $pdf_out"
+            if [[ "$_auto_open" == "true" ]]; then
+                open_browser "$pdf_out"
+            fi
+            ;;
+        html|*)
+            local report_file="$LOG_DIR/dashboard.html"
+            local template_file="$INSTALL_DIR/templates/dashboard.html"
+            python3 "$INSTALL_DIR/modules/report.py" "$template_file" "$report_file"
+            log_success "Generated: $report_file"
 
-        log_success "Generated: $report_file"
+            # Collect summary counts for webhook
+            local host_count port_count vuln_count
+            host_count=$(db_exec "SELECT COUNT(*) FROM hosts;" 2>/dev/null || echo 0)
+            port_count=$(db_exec "SELECT COUNT(*) FROM ports;" 2>/dev/null || echo 0)
+            vuln_count=$(db_exec "SELECT COUNT(*) FROM vulnerabilities;" 2>/dev/null || echo 0)
 
-        # Send Webhook
-        local HOSTS=0
-        if [[ -f "$LOG_DIR/live_traffic.pcap" ]]; then
-            HOSTS=$(sudo tcpdump -nn -e -r "$LOG_DIR/live_traffic.pcap" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | sort -u | wc -l)
-        fi
-        send_webhook "Report generated. $HOSTS active hosts found."
+            send_webhook "Report generated." "report/generate" \
+                "$host_count" "$port_count" "$vuln_count" "$report_file"
 
-        if [[ "$_auto_open" == "true" ]]; then
-            open_browser "$report_file"
-        fi
-        log_info "Report generation complete."
-    fi
+            if [[ "$_auto_open" == "true" ]]; then
+                open_browser "$report_file"
+            fi
+            log_info "Report generation complete."
+            ;;
+    esac
+    return 0
 }

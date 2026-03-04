@@ -21,7 +21,7 @@ header() {
     echo "   ██║╚██████╔╝██║ ╚████║███████║╚██████╗██║  ██║██║ ╚████║"
     echo "   ╚═╝ ╚═════╝ ╚═╝  ╚═══╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═══╝"
     echo -e "${NC}"
-    echo -e "${BLUE}${BOLD}   Network Intelligence Suite v22.0 (Git Edition)${NC}"
+    echo -e "${BLUE}${BOLD}   Network Intelligence Suite v24.0 (Git Edition)${NC}"
     echo -e "${CYAN}   ========================================================${NC}"
     echo -e "   ${WHITE}Interface:${NC} $DEFAULT_IFACE  |  ${WHITE}IP:${NC} $MY_IP"
     echo -e "${CYAN}   ========================================================${NC}"
