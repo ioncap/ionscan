@@ -16,10 +16,22 @@ get_interface() {
     [[ -z "$MY_IP" ]] && MY_IP="Unknown"
 }
 
+# In-memory OUI lookup cache — avoids repeated grep calls on the OUI file
+declare -gA _OUI_CACHE
+
 get_vendor() {
     local mac; mac=$(echo "$1" | tr -d ':' | tr '[:lower:]' '[:upper:]' | head -c 6)
     [[ ! -f "$OUI_DB" ]] && echo "Unknown" && return
-    grep -i "^${mac}" "$OUI_DB" | cut -f 3- | head -n 1 | xargs || echo "Unknown"
+
+    # Return cached result if available
+    if [[ -n "${_OUI_CACHE[$mac]+set}" ]]; then
+        echo "${_OUI_CACHE[$mac]}"
+        return
+    fi
+
+    local vendor; vendor=$(grep -i "^${mac}" "$OUI_DB" | cut -f 3- | head -n 1 | xargs || echo "Unknown")
+    _OUI_CACHE[$mac]="$vendor"
+    echo "$vendor"
 }
 
 validate_ip() {

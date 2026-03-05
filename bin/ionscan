@@ -57,8 +57,12 @@ HISTSIZE=1000
 
 # --- STATE VARIABLES ---
 CURRENT_MODULE=""
+DRY_RUN=false
 declare -A MODULE_OPTIONS
 declare -A TARGETS=([0]="demo.ionscan.org")
+
+# Spinner state
+_SPINNER_PID=""
 
 # Module list cache (rebuilt on first use)
 declare -a _MODULES_CACHE=()
@@ -99,20 +103,47 @@ parse_module_option() {
 validate_input() {
     local value="$1"
     local type="${2:-string}"
-    
+
+    # Helper: check all octets of an IPv4 string are 0-255
+    _valid_octets() {
+        local addr="$1"
+        local -a octs
+        IFS='.' read -ra octs <<< "$addr"
+        local o
+        for o in "${octs[@]}"; do
+            (( 10#$o >= 0 && 10#$o <= 255 )) || return 1
+        done
+        return 0
+    }
+
     case "$type" in
         ip)
-            [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && return 0
+            if [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+                _valid_octets "$value" && return 0
+            fi
             ;;
         cidr)
-            [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] && return 0
+            if [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]{1,2})$ ]]; then
+                local _ip="${value%%/*}" _prefix="${value##*/}"
+                _valid_octets "$_ip" && (( 10#$_prefix >= 0 && 10#$_prefix <= 32 )) && return 0
+            fi
             ;;
         ip_or_cidr|target)
-            [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$ ]] && return 0
+            if [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/([0-9]{1,2}))?$ ]]; then
+                local _ip="${value%%/*}"
+                if _valid_octets "$_ip"; then
+                    if [[ "$value" == *"/"* ]]; then
+                        local _prefix="${value##*/}"
+                        (( 10#$_prefix >= 0 && 10#$_prefix <= 32 )) && return 0
+                    else
+                        return 0
+                    fi
+                fi
+            fi
             [[ "$value" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] && return 0
             ;;
         port)
-            [[ "$value" =~ ^[0-9]+$ ]] && (( value >= 1 && value <= 65535 )) && return 0
+            [[ "$value" =~ ^[0-9]+$ ]] && (( 10#$value >= 1 && 10#$value <= 65535 )) && return 0
             ;;
         port_range)
             [[ "$value" =~ ^[0-9]+-[0-9]+$ ]] && return 0
@@ -121,11 +152,10 @@ validate_input() {
             [[ "$value" =~ ^(true|false|yes|no|1|0)$ ]] && return 0
             ;;
         string|*)
-            # String is always valid (but we still sanitize)
             return 0
             ;;
     esac
-    
+
     return 1
 }
 
@@ -170,6 +200,213 @@ get_options_array_name() {
     echo "${name^^}"
 }
 
+# --- PROGRESS SPINNER ---
+
+start_spinner() {
+    local msg="${1:-Working...}"
+    if [[ ! -t 2 ]]; then return; fi
+    (
+        local chars='|/-\'
+        local i=0
+        while true; do
+            i=$(( (i + 1) % 4 ))
+            printf "\r${CYAN}[%s]${NC} %s  " "${chars:$i:1}" "$msg" >&2
+            sleep 0.15
+        done
+    ) &
+    _SPINNER_PID=$!
+}
+
+stop_spinner() {
+    if [[ -n "${_SPINNER_PID:-}" ]] && kill -0 "$_SPINNER_PID" 2>/dev/null; then
+        kill "$_SPINNER_PID" 2>/dev/null
+        wait "$_SPINNER_PID" 2>/dev/null || true
+        _SPINNER_PID=""
+    fi
+    # Clear the spinner line
+    printf "\r%*s\r" "${COLUMNS:-80}" "" >&2
+}
+
+# --- SESSION PERSISTENCE ---
+
+cmd_save_session() {
+    local name="${1:-default}"
+    local session_file="$LOG_DIR/session_${name}.env"
+
+    {
+        echo "# IonScan session saved $(date)"
+        echo "SESSION_MODULE=${CURRENT_MODULE}"
+        for key in "${!MODULE_OPTIONS[@]}"; do
+            echo "SESSION_OPT_${key}=${MODULE_OPTIONS[$key]}"
+        done
+        for id in "${!TARGETS[@]}"; do
+            echo "SESSION_TARGET_${id}=${TARGETS[$id]}"
+        done
+    } > "$session_file"
+
+    log_success "Session '$name' saved to $session_file"
+}
+
+cmd_load_session() {
+    local name="${1:-default}"
+    local session_file="$LOG_DIR/session_${name}.env"
+
+    if [[ ! -f "$session_file" ]]; then
+        log_error "Session file not found: $session_file"
+        return 1
+    fi
+
+    CURRENT_MODULE=""
+    MODULE_OPTIONS=()
+    TARGETS=()
+
+    while IFS='=' read -r key value; do
+        [[ "$key" =~ ^# || -z "$key" ]] && continue
+        case "$key" in
+            SESSION_MODULE)
+                [[ -n "$value" ]] && { cmd_use "$value" 2>/dev/null || true; } ;;
+            SESSION_OPT_*)
+                local opt_key="${key#SESSION_OPT_}"
+                MODULE_OPTIONS["$opt_key"]="$value" ;;
+            SESSION_TARGET_*)
+                local target_id="${key#SESSION_TARGET_}"
+                TARGETS["$target_id"]="$value" ;;
+        esac
+    done < "$session_file"
+
+    log_success "Session '$name' loaded."
+}
+
+# --- RUN HISTORY ---
+
+cmd_run_history() {
+    echo -e "${BOLD}Run History (last 20):${NC}"
+    echo "========================================================="
+    local result
+    result=$(db_get_runs 20 2>/dev/null)
+    if [[ -z "$result" ]]; then
+        log_info "No run history available. Runs are recorded after each successful 'run' command."
+        return 0
+    fi
+    printf "  %-5s %-28s %-22s %-8s %s\n" "ID" "Module" "Timestamp" "Duration" "Status"
+    printf "  %-5s %-28s %-22s %-8s %s\n" "---" "------" "---------" "--------" "------"
+    while IFS='|' read -r id mod ts dur status; do
+        printf "  %-5s %-28s %-22s %-8s %s\n" "$id" "$mod" "$ts" "${dur}s" "$status"
+    done <<< "$result"
+    echo ""
+}
+
+cmd_replay() {
+    local run_id="$1"
+    if [[ -z "$run_id" || ! "$run_id" =~ ^[0-9]+$ ]]; then
+        log_error "Usage: replay <run_id>  (get IDs from 'show runs')"
+        return 1
+    fi
+
+    local row
+    row=$(db_exec "SELECT module, options_json FROM runs WHERE id = $run_id;" 2>/dev/null)
+    if [[ -z "$row" ]]; then
+        log_error "No run found with ID $run_id"
+        return 1
+    fi
+
+    local mod options_json
+    IFS='|' read -r mod options_json <<< "$row"
+
+    log_info "Replaying run #$run_id: $mod"
+    cmd_use "$mod" || return 1
+
+    # Restore options from the stored JSON (format: {"KEY":"val","KEY2":"val2"})
+    while IFS= read -r pair; do
+        local k v
+        if [[ "$pair" =~ \"([^\"]+)\":\"([^\"]*)\" ]]; then
+            k="${BASH_REMATCH[1]}"
+            v="${BASH_REMATCH[2]}"
+            [[ -n "$k" ]] && MODULE_OPTIONS["$k"]="$v"
+        fi
+    done < <(echo "$options_json" | grep -oP '"[^"]+":"[^"]*"' 2>/dev/null || true)
+
+    log_info "Options restored from run #$run_id. Use 'show options' to verify, then 'run' to execute."
+}
+
+# --- DIFF ---
+
+cmd_diff() {
+    local module="${1:-$CURRENT_MODULE}"
+    if [[ -z "$module" ]]; then
+        log_error "Usage: diff [module_path]  (uses current module if omitted)"
+        return 1
+    fi
+
+    local safe_module="${module//\'/\'\'}"
+    local rows
+    rows=$(db_exec "SELECT id, timestamp, options_json FROM runs WHERE module='$safe_module' ORDER BY timestamp DESC LIMIT 2;" 2>/dev/null)
+
+    if [[ -z "$rows" ]]; then
+        log_warning "No run history for '$module'. Run the module at least twice first."
+        return 0
+    fi
+
+    local -a ids=() times=() opts=()
+    while IFS='|' read -r id ts opt; do
+        ids+=("$id"); times+=("$ts"); opts+=("$opt")
+    done <<< "$rows"
+
+    if [[ ${#ids[@]} -lt 2 ]]; then
+        log_info "Only one run recorded for '$module'. Need at least 2 runs to compare."
+        return 0
+    fi
+
+    echo -e "${BOLD}Diff for module '$module':${NC}"
+    echo "================================================================="
+    echo -e "  ${GREEN}+ Newest run #${ids[0]}${NC}: ${times[0]}"
+    echo -e "  ${RED}- Previous run #${ids[1]}${NC}: ${times[1]}"
+    echo ""
+
+    if [[ "${opts[0]}" != "${opts[1]}" ]]; then
+        echo -e "${BOLD}Option Changes:${NC}"
+        echo -e "  Previous: ${opts[1]}"
+        echo -e "  Current:  ${opts[0]}"
+    else
+        log_info "Options unchanged between runs."
+    fi
+
+    echo ""
+    echo -e "${BOLD}Current Database State:${NC}"
+    local host_count port_count vuln_count
+    host_count=$(db_exec "SELECT COUNT(*) FROM hosts;" 2>/dev/null)
+    port_count=$(db_exec "SELECT COUNT(*) FROM ports;" 2>/dev/null)
+    vuln_count=$(db_exec "SELECT COUNT(*) FROM vulnerabilities;" 2>/dev/null)
+    echo -e "  Hosts: ${host_count:-0}  |  Open Ports: ${port_count:-0}  |  Vulnerabilities: ${vuln_count:-0}"
+    echo ""
+}
+
+# --- BATCH RUN ALL TARGETS ---
+
+cmd_run_all() {
+    if [[ -z "$CURRENT_MODULE" ]]; then
+        log_error "No module loaded. Use 'use <module>' first."
+        return 1
+    fi
+    if [[ ${#TARGETS[@]} -eq 0 ]]; then
+        log_error "Target list is empty. Use 'add target <ip>' first."
+        return 1
+    fi
+
+    log_info "Batch run: '$CURRENT_MODULE' against ${#TARGETS[@]} target(s)..."
+    local success=0 fail=0
+    for t in "${TARGETS[@]}"; do
+        log_info "--- Target: $t ---"
+        MODULE_OPTIONS[TARGET]="$t"
+        if cmd_run; then
+            success=$(( success + 1 ))
+        else
+            fail=$(( fail + 1 ))
+        fi
+    done
+    log_success "Batch complete: $success succeeded, $fail failed."
+}
+
 # --- COMMAND HANDLERS ---
 
 cmd_help() {
@@ -181,11 +418,17 @@ cmd_help() {
     echo "  show modules      List all available modules (numbered)"
     echo "  show options      Show options for the current module"
     echo "  show targets      Show the current list of targets"
+    echo "  show runs         Show module execution history"
     echo "  add target <ip>   Add a target to the target list"
     echo "  rm target <id>    Remove a target from the list"
     echo "  use <module>      Select a module (full path, partial name, or number)"
     echo "  set <key> <val>   Set an option for the current module"
     echo "  run               Run the current module"
+    echo "  run all           Run the current module against every target in list"
+    echo "  replay <id>       Re-run a previous run by ID (from 'show runs')"
+    echo "  diff [module]     Compare last two runs of a module"
+    echo "  save [name]       Save current session state to file"
+    echo "  load [name]       Load a previously saved session"
     echo "  back              Deselect the current module"
     echo "  search <term>     Search modules by keyword"
     echo "  exit              Exit IonScan"
@@ -194,8 +437,14 @@ cmd_help() {
     echo "  ls / modules      Alias for 'show modules'"
     echo "  opts / options    Alias for 'show options'"
     echo "  targets           Alias for 'show targets'"
+    echo "  runs              Alias for 'show runs'"
     echo "  use <number>      Select module by number (from 'show modules' list)"
     echo "  use <partial>     Fuzzy match — e.g., 'use fast_scan' or 'use vuln'"
+    echo ""
+    echo -e "${BOLD}Flags (CLI):${NC}"
+    echo "  --dry-run         Print commands without executing them"
+    echo "  --auto            Headless auto-scan mode"
+    echo "  --agree           Skip disclaimer"
     echo ""
     echo -e "${BOLD}Tab Completion:${NC}"
     echo "  TAB after 'use'   Complete module names"
@@ -204,6 +453,7 @@ cmd_help() {
     echo "  TAB on empty line Complete command names"
     echo ""
     echo -e "${BOLD}Tips:${NC}"
+    echo "  - Required options shown in ${RED}red${NC}, set options in ${GREEN}green${NC}"
     echo "  - Use UP/DOWN arrows for command history"
     echo "  - Valid module categories: ${VALID_MODULE_CATEGORIES[*]}"
     echo ""
@@ -233,6 +483,11 @@ cmd_show() {
             local prev_category="" n=1 entry category
             for entry in "${_MODULES_CACHE[@]}"; do
                 category="${entry%%/*}"
+                # Skip modules in disabled categories
+                local cat_enabled
+                cat_enabled=$(get_config "MODULE_${category^^}_ENABLED" 2>/dev/null)
+                [[ "$cat_enabled" == "false" ]] && continue
+
                 if [[ "$category" != "$prev_category" ]]; then
                     echo -e "  ${CYAN}${category}${NC}:"
                     prev_category="$category"
@@ -269,10 +524,10 @@ cmd_show() {
             
             printf "  %-15s %-20s %-10s %-10s %s\n" "Name" "Current Setting" "Required" "Type" "Description"
             printf "  %-15s %-20s %-10s %-10s %s\n" "----" "---------------" "--------" "----" "-----------"
-            
+
             for key in "${!ref_options_array[@]}"; do
                 local option_details="${ref_options_array[$key]}"
-                
+
                 local description
                 description=$(parse_module_option "$option_details" "description")
                 local required
@@ -281,11 +536,24 @@ cmd_show() {
                 default_val=$(parse_module_option "$option_details" "default")
                 local type_val
                 type_val=$(parse_module_option "$option_details" "type")
-                
+
                 local current_val="${MODULE_OPTIONS[$key]:-$default_val}"
                 [[ -z "$current_val" ]] && current_val="<not set>"
-                
-                printf "  %-15s %-20s %-10s %-10s %s\n" "$key" "$current_val" "$required" "$type_val" "$description"
+
+                # Color the key: RED = required+unset, GREEN = required+set, CYAN = optional+set
+                local key_color="$NC"
+                if [[ "$required" == "true" ]]; then
+                    if [[ "$current_val" == "<not set>" ]]; then
+                        key_color="$RED"
+                    else
+                        key_color="$GREEN"
+                    fi
+                elif [[ "$current_val" != "<not set>" ]]; then
+                    key_color="$CYAN"
+                fi
+
+                printf "  ${key_color}%-15s${NC} %-20s %-10s %-10s %s\n" \
+                    "$key" "$current_val" "$required" "$type_val" "$description"
             done
             echo ""
             ;; 
@@ -307,15 +575,18 @@ cmd_show() {
             if [[ -f "$HISTFILE" ]]; then
                 echo -e "${BOLD}Command History:${NC}"
                 echo "================"
-                cat "$HISTFILE" | tail -n 20
+                tail -n 20 "$HISTFILE"
                 echo ""
             else
                 log_info "No command history available."
             fi
             ;;
+        runs)
+            cmd_run_history
+            ;;
         *)
             log_error "Unknown 'show' command: '$sub_cmd'."
-            log_info "Available: modules, options, targets, history"
+            log_info "Available: modules, options, targets, history, runs"
             return 1
             ;; 
     esac
@@ -453,7 +724,15 @@ cmd_use() {
         log_info "Valid categories: ${VALID_MODULE_CATEGORIES[*]}"
         return 1
     fi
-    
+
+    # Check if the module category is enabled in config
+    local cat_enabled
+    cat_enabled=$(get_config "MODULE_${module_category^^}_ENABLED" 2>/dev/null)
+    if [[ "$cat_enabled" == "false" ]]; then
+        log_error "Module category '$module_category' is disabled (MODULE_${module_category^^}_ENABLED=false in config)."
+        return 1
+    fi
+
     local module_path="$INSTALL_DIR/modules/${module_category}.sh"
 
     if [[ ! -f "$module_path" ]]; then
@@ -613,22 +892,29 @@ cmd_run() {
         fi
     fi
     
+    # Dry-run mode: print what would run without executing
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY RUN] Would execute: $func_to_run"
+        log_info "[DRY RUN] Options:"
+        for key in "${!MODULE_OPTIONS[@]}"; do
+            log_info "[DRY RUN]   $key = ${MODULE_OPTIONS[$key]}"
+        done
+        return 0
+    fi
+
     # Create log file for this run
     local timestamp
     timestamp=$(date +%Y%m%d_%H%M%S)
     local log_file="$LOG_DIR/module_${CURRENT_MODULE//\//_}_${timestamp}.log"
-    
-    # Ensure log directory exists
+
     mkdir -p "$LOG_DIR" 2>/dev/null || true
-    
+
     local start_time
     start_time=$(date +%s)
-    
+
     log_info "Running module: $CURRENT_MODULE..."
     log_info "Logging to: $log_file"
-    
-    # Run the module function directly (NO EVAL!)
-    # Redirect output to both console and log file
+
     {
         echo "=== Module Run: $CURRENT_MODULE ==="
         echo "=== Timestamp: $(date) ==="
@@ -638,23 +924,42 @@ cmd_run() {
         done
         echo "=== Output: ==="
     } | tee "$log_file"
-    
-    # Execute module function with error handling
+
+    # Build a compact JSON snapshot of current options for run history
+    local _opts_json="{"
+    local _first_opt=true
+    for key in "${!MODULE_OPTIONS[@]}"; do
+        [[ "$_first_opt" == "true" ]] || _opts_json+=","
+        _opts_json+="\"${key}\":\"${MODULE_OPTIONS[$key]//\"/\\\"}\""
+        _first_opt=false
+    done
+    _opts_json+="}"
+
+    # Show spinner while module runs
+    start_spinner "Running $CURRENT_MODULE..."
+
     if "$func_to_run" 2>&1 | tee -a "$log_file"; then
+        stop_spinner
         local end_time
         end_time=$(date +%s)
-        local duration=$((end_time - start_time))
-        
+        local duration=$(( end_time - start_time ))
+
         log_success "Module completed successfully in ${duration}s"
         echo "=== Completed at: $(date) ===" | tee -a "$log_file"
+
+        # Record successful run in the database
+        db_add_run "$CURRENT_MODULE" "$duration" "success" "$_opts_json" 2>/dev/null || true
     else
+        stop_spinner
         local exit_code=$?
         local end_time
         end_time=$(date +%s)
-        local duration=$((end_time - start_time))
-        
+        local duration=$(( end_time - start_time ))
+
         log_error "Module failed with exit code $exit_code after ${duration}s"
         echo "=== Failed at: $(date) with exit code $exit_code ===" | tee -a "$log_file"
+
+        db_add_run "$CURRENT_MODULE" "$duration" "failed" "$_opts_json" 2>/dev/null || true
         return $exit_code
     fi
 }
@@ -705,10 +1010,10 @@ setup_readline_completion() {
         local -a matches=()
 
         case "$first_word" in
-            ""|help|show|use|set|run|back|exit|quit|add|rm|search|ls|opts|options|targets|info)
+            ""|help|show|use|set|run|back|exit|quit|add|rm|search|ls|opts|options|targets|info|runs|replay|diff|save|load)
                 if [[ $num_words -le 1 ]]; then
                     # Complete command name
-                    local all_cmds="help show use set run back exit quit add rm search ls opts options targets info"
+                    local all_cmds="help show use set run back exit quit add rm search ls opts options targets info runs replay diff save load"
                     mapfile -t matches < <(compgen -W "$all_cmds" -- "$cur_word")
 
                 elif [[ "$first_word" == "use" && $num_words -eq 2 ]]; then
@@ -727,7 +1032,7 @@ setup_readline_completion() {
                     fi
 
                 elif [[ "$first_word" == "show" && $num_words -eq 2 ]]; then
-                    mapfile -t matches < <(compgen -W "modules options targets history" -- "$cur_word")
+                    mapfile -t matches < <(compgen -W "modules options targets history runs" -- "$cur_word")
 
                 elif [[ ("$first_word" == "add" || "$first_word" == "rm") && $num_words -eq 2 ]]; then
                     mapfile -t matches < <(compgen -W "target" -- "$cur_word")
@@ -823,7 +1128,26 @@ interactive_shell() {
                 cmd_set "$args"
                 ;;
             run)
-                cmd_run
+                if [[ "$args" == "all" ]]; then
+                    cmd_run_all
+                else
+                    cmd_run
+                fi
+                ;;
+            replay)
+                cmd_replay "$args"
+                ;;
+            diff)
+                cmd_diff "$args"
+                ;;
+            save)
+                cmd_save_session "$args"
+                ;;
+            load)
+                cmd_load_session "$args"
+                ;;
+            runs)
+                cmd_run_history
                 ;;
             back)
                 cmd_back
@@ -926,6 +1250,12 @@ main() {
                 ;;
             --auto)
                 auto_run=true
+                shift
+                ;;
+            --dry-run)
+                DRY_RUN=true
+                export IONSCAN_DRY_RUN=true
+                log_info "Dry-run mode enabled. Commands will be printed but not executed."
                 shift
                 ;;
             *)

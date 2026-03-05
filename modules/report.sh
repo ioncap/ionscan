@@ -8,8 +8,8 @@
 
 # Options for mod_report
 declare -gA MOD_OPTIONS_REPORT_REPORT
-MOD_OPTIONS_REPORT_REPORT[FORMAT]="description='Output format (html or json)' required=false default='html'"
-MOD_OPTIONS_REPORT_REPORT[AUTO_OPEN]="description='Automatically open HTML report in browser' required=false default='false'"
+MOD_OPTIONS_REPORT_REPORT[FORMAT]="description='Output format: html, json, or csv' required=false default='html' type='string'"
+MOD_OPTIONS_REPORT_REPORT[AUTO_OPEN]="description='Automatically open HTML report in browser' required=false default='false' type='boolean'"
 
 mod_report() {
     local _output_format="${MODULE_OPTIONS[FORMAT]}"
@@ -28,6 +28,10 @@ mod_report() {
     if [[ "$_output_format" == "json" ]]; then
         python3 "$INSTALL_DIR/modules/report.py" --json
         log_success "JSON report generated to stdout."
+    elif [[ "$_output_format" == "csv" ]]; then
+        local csv_file="$LOG_DIR/report.csv"
+        python3 "$INSTALL_DIR/modules/report.py" --csv > "$csv_file"
+        log_success "CSV report saved to: $csv_file"
     else # HTML output
         local report_file="$LOG_DIR/dashboard.html"
         local template_file="$INSTALL_DIR/templates/dashboard.html"
@@ -41,7 +45,7 @@ mod_report() {
         if [[ -f "$LOG_DIR/live_traffic.pcap" ]]; then
             HOSTS=$(sudo tcpdump -nn -e -r "$LOG_DIR/live_traffic.pcap" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | sort -u | wc -l)
         fi
-        send_webhook "Report generated. $HOSTS active hosts found."
+        send_webhook "Report generated. $HOSTS active hosts found." "report/generate"
 
         if [[ "$_auto_open" == "true" ]]; then
             open_browser "$report_file"

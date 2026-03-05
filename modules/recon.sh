@@ -38,6 +38,23 @@ MOD_OPTIONS_RECON_WEB[WORDLIST]="description='Path to wordlist for gobuster' req
 declare -gA MOD_OPTIONS_RECON_NETBIOS
 MOD_OPTIONS_RECON_NETBIOS[SUBNET]="description='Subnet to scan (e.g., 192.168.1.0/24)' required=false default='auto'"
 
+# Options for mod_portscan
+declare -gA MOD_OPTIONS_RECON_PORTSCAN
+MOD_OPTIONS_RECON_PORTSCAN[TARGET]="description='Target IP, CIDR, or all' required=true type='cidr'"
+MOD_OPTIONS_RECON_PORTSCAN[PORTS]="description='Port range or list (e.g., 1-1024 or 80,443)' required=false default='1-1024' type='string'"
+MOD_OPTIONS_RECON_PORTSCAN[TIMING]="description='Nmap timing template (1-5)' required=false default='4' type='port'"
+MOD_OPTIONS_RECON_PORTSCAN[SERVICE_DETECT]="description='Enable service version detection (-sV)' required=false default='true' type='boolean'"
+
+# Options for mod_os_detect
+declare -gA MOD_OPTIONS_RECON_OS_DETECT
+MOD_OPTIONS_RECON_OS_DETECT[TARGET]="description='Target IP or all' required=true type='ip'"
+
+# Options for mod_http_probe
+declare -gA MOD_OPTIONS_RECON_HTTP_PROBE
+MOD_OPTIONS_RECON_HTTP_PROBE[TARGET]="description='Target IP or all' required=true type='ip'"
+MOD_OPTIONS_RECON_HTTP_PROBE[PORTS]="description='Comma-separated ports to probe' required=false default='80,443,8080,8443' type='string'"
+MOD_OPTIONS_RECON_HTTP_PROBE[TIMEOUT]="description='Connection timeout in seconds' required=false default='5' type='port'"
+
 
 # [1] GHOST WITNESS
 mod_passive() {
@@ -235,4 +252,147 @@ mod_web() {
         gobuster dir -u "http://$t" -w "$wordlist" -t 20 --no-error -o "$LOG_DIR/web_scan_${t}.txt"
     done
     log_info "Web spider complete."
+}
+
+# PORT SCANNER — configurable port range with optional service detection
+mod_portscan() {
+    local target="${MODULE_OPTIONS[TARGET]:-}"
+    local ports="${MODULE_OPTIONS[PORTS]:-1-1024}"
+    local timing="${MODULE_OPTIONS[TIMING]:-4}"
+    local service_detect="${MODULE_OPTIONS[SERVICE_DETECT]:-true}"
+
+    if [[ -z "$target" ]]; then
+        log_error "Required option 'TARGET' not set. Use 'set TARGET <ip/cidr/all>'."
+        return
+    fi
+
+    local svc_flag="-sV"
+    [[ "$service_detect" == "false" || "$service_detect" == "no" || "$service_detect" == "0" ]] && svc_flag=""
+
+    export DB_FILE
+
+    if [[ "$target" == "all" ]]; then
+        if [[ ${#TARGETS[@]} -eq 0 ]]; then
+            log_error "TARGET is 'all' but target list is empty. Use 'add target <ip>'."
+            return
+        fi
+        log_info "Port scanning all targets (ports: $ports, timing: T$timing)..."
+        > "$TMP_TARGETS"
+        printf '%s\n' "${TARGETS[@]}" > "$TMP_TARGETS"
+        sudo nmap $svc_flag -p "$ports" -T"$timing" -n --open --stats-every 15s \
+            -oX - -iL "$TMP_TARGETS" | python3 "$INSTALL_DIR/parsers/nmap_fast_scan_parser.py"
+    else
+        validate_ip "$target" || { log_error "Invalid IP/CIDR for TARGET."; return; }
+        log_info "Port scanning $target (ports: $ports, timing: T$timing)..."
+        sudo nmap $svc_flag -p "$ports" -T"$timing" -n --open --stats-every 15s \
+            -oX - "$target" | python3 "$INSTALL_DIR/parsers/nmap_fast_scan_parser.py"
+    fi
+
+    log_info "Port scan complete. Data stored in database."
+}
+
+# OS DETECTION — nmap OS fingerprinting with result stored in database
+mod_os_detect() {
+    local target="${MODULE_OPTIONS[TARGET]:-}"
+
+    if [[ -z "$target" ]]; then
+        log_error "Required option 'TARGET' not set. Use 'set TARGET <ip/all>'."
+        return
+    fi
+
+    local targets_to_scan=()
+    if [[ "$target" == "all" ]]; then
+        if [[ ${#TARGETS[@]} -eq 0 ]]; then
+            log_error "TARGET is 'all' but target list is empty. Use 'add target <ip>'."
+            return
+        fi
+        for t in "${TARGETS[@]}"; do targets_to_scan+=("$t"); done
+    else
+        validate_ip "$target" || { log_error "Invalid IP for TARGET."; return; }
+        targets_to_scan+=("$target")
+    fi
+
+    for t in "${targets_to_scan[@]}"; do
+        log_info "OS fingerprinting $t (requires root/sudo)..."
+        local result; result=$(sudo nmap -O --osscan-guess -T4 -n "$t" 2>&1)
+        local os_guess
+        os_guess=$(echo "$result" | grep -i "OS details:\|Aggressive OS guesses:\|Running:" | head -n1 | sed 's/.*: //' | cut -c1-100)
+
+        if [[ -n "$os_guess" ]]; then
+            log_success "OS guess for $t: $os_guess"
+            local safe_t="${t//\'/\'\'}"
+            local safe_os="${os_guess//\'/\'\'}"
+            db_exec "UPDATE hosts SET os_guess='$safe_os' WHERE ip_address='$safe_t';" 2>/dev/null || true
+        else
+            log_warning "Could not determine OS for $t. Try with root privileges."
+        fi
+    done
+
+    log_info "OS detection complete."
+}
+
+# HTTP PROBE — banner grabbing and HTTP header analysis via curl
+mod_http_probe() {
+    local target="${MODULE_OPTIONS[TARGET]:-}"
+    local ports="${MODULE_OPTIONS[PORTS]:-80,443,8080,8443}"
+    local timeout="${MODULE_OPTIONS[TIMEOUT]:-5}"
+
+    if [[ -z "$target" ]]; then
+        log_error "Required option 'TARGET' not set. Use 'set TARGET <ip/all>'."
+        return
+    fi
+
+    local targets_to_scan=()
+    if [[ "$target" == "all" ]]; then
+        if [[ ${#TARGETS[@]} -eq 0 ]]; then
+            log_error "TARGET is 'all' but target list is empty. Use 'add target <ip>'."
+            return
+        fi
+        for t in "${TARGETS[@]}"; do targets_to_scan+=("$t"); done
+    else
+        validate_ip "$target" || { log_error "Invalid IP for TARGET."; return; }
+        targets_to_scan+=("$target")
+    fi
+
+    local -a port_list
+    IFS=',' read -ra port_list <<< "$ports"
+
+    for t in "${targets_to_scan[@]}"; do
+        local safe_t="${t//\'/\'\'}"
+        local host_id; host_id=$(db_exec "SELECT id FROM hosts WHERE ip_address='$safe_t';" 2>/dev/null)
+        [[ -z "$host_id" ]] && host_id=$(db_add_or_get_host "$t")
+
+        for p in "${port_list[@]}"; do
+            local scheme="http"
+            [[ "$p" == "443" || "$p" == "8443" ]] && scheme="https"
+            local url="${scheme}://${t}:${p}"
+
+            log_info "Probing $url..."
+            local headers; headers=$(curl -skI --max-time "$timeout" --connect-timeout "$timeout" "$url" 2>/dev/null)
+
+            if [[ -z "$headers" ]]; then
+                log_info "  No response from $url"
+                continue
+            fi
+
+            local status_code; status_code=$(echo "$headers" | head -n1 | grep -oP '[0-9]{3}' | head -1)
+            local server; server=$(echo "$headers" | grep -i "^server:" | cut -d: -f2- | xargs)
+            local redirect; redirect=$(echo "$headers" | grep -i "^location:" | cut -d: -f2- | xargs)
+            local page_title
+            page_title=$(curl -sk --max-time "$timeout" --connect-timeout "$timeout" "$url" 2>/dev/null \
+                | grep -oi '<title>[^<]*</title>' | sed 's/<[^>]*>//g' | head -1)
+
+            log_success "  $url → HTTP ${status_code:-?} | Server: ${server:-unknown} | Title: ${page_title:-n/a}"
+
+            if [[ -n "$host_id" ]]; then
+                local safe_server="${server//\'/\'\'}"
+                local safe_redirect="${redirect//\'/\'\'}"
+                local safe_title="${page_title//\'/\'\'}"
+                db_exec "INSERT OR IGNORE INTO http_info (host_id, port, protocol, server_header, status_code, redirect_url, title)
+                    VALUES ($host_id, $p, '$scheme', '$safe_server', '${status_code:-0}', '$safe_redirect', '$safe_title');" 2>/dev/null || true
+            fi
+        done
+    done
+
+    log_info "HTTP probe complete."
 }

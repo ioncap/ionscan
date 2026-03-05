@@ -25,8 +25,9 @@ MOD_OPTIONS_UTILS_DECOY[TARGET]="description='Target IP or "all"' required=true"
 MOD_OPTIONS_UTILS_DECOY[DECOYS]="description='Number of decoys to use' required=false default='10'"
 
 # Options for mod_cron
-# This module will be refactored later to be configurable via options.
-# For now, it will simply log a warning message.
+declare -gA MOD_OPTIONS_UTILS_CRON
+MOD_OPTIONS_UTILS_CRON[ACTION]="description='Action to perform: list, add, or remove' required=false default='list' type='string'"
+MOD_OPTIONS_UTILS_CRON[SCHEDULE]="description='Cron schedule expression (used with ACTION=add)' required=false default='0 2 * * *' type='string'"
 
 
 # [4] MAC
@@ -142,8 +143,38 @@ mod_decoy() {
     log_info "Decoy scan complete."
 }
 
-# [20] AUTO-SCHEDULER (Fixed)
+# [20] AUTO-SCHEDULER
 mod_cron() {
-    log_warning "mod_cron is not yet fully supported in the interactive shell due to its interactive nature."
-    log_warning "Please run the main script with '--setup' to manage cron jobs."
+    local action="${MODULE_OPTIONS[ACTION]:-list}"
+    local schedule="${MODULE_OPTIONS[SCHEDULE]:-0 2 * * *}"
+    local ionscan_bin="$INSTALL_DIR/bin/ionscan"
+    local cron_entry="$schedule $ionscan_bin --auto --agree >> $LOG_DIR/auto.log 2>&1 # ionscan-auto"
+
+    case "$action" in
+        list)
+            log_info "Current IonScan cron jobs:"
+            local current_cron; current_cron=$(crontab -l 2>/dev/null | grep "ionscan" || true)
+            if [[ -z "$current_cron" ]]; then
+                log_info "No IonScan cron jobs found."
+            else
+                echo "$current_cron"
+            fi
+            ;;
+        add)
+            if crontab -l 2>/dev/null | grep -q "ionscan-auto"; then
+                log_warning "An IonScan cron job already exists. Remove it first with ACTION=remove."
+                return 1
+            fi
+            (crontab -l 2>/dev/null; echo "$cron_entry") | crontab -
+            log_success "Cron job added. IonScan will auto-run at: $schedule"
+            ;;
+        remove)
+            log_info "Removing IonScan cron jobs..."
+            crontab -l 2>/dev/null | grep -v "ionscan-auto" | crontab -
+            log_success "IonScan cron jobs removed."
+            ;;
+        *)
+            log_error "Unknown ACTION: '$action'. Valid values: list, add, remove"
+            ;;
+    esac
 }

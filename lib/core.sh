@@ -31,11 +31,30 @@ get_config() {
     fi
 }
 
+# Cached LOG_LEVEL (avoids repeated file reads on every log call)
+_LOG_LEVEL_CACHE=""
+
 log_raw() {
     local level="$1"; local msg="$2"; local color="$3"
     local ts; ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    if [[ -t 1 ]]; then printf "${color}[%s] %s${NC}\n" "$level" "$msg"; fi
+
+    # Always write to the log file
     printf "%s [%s] %s\n" "$ts" "$level" "$msg" >> "$MAIN_LOG"
+
+    # Populate LOG_LEVEL cache on first call
+    if [[ -z "$_LOG_LEVEL_CACHE" ]]; then
+        _LOG_LEVEL_CACHE=$(get_config LOG_LEVEL 2>/dev/null)
+        _LOG_LEVEL_CACHE="${_LOG_LEVEL_CACHE:-INFO}"
+    fi
+
+    # Filter terminal output based on configured LOG_LEVEL
+    # WARN: suppress INFO/OK; ERR: suppress INFO/OK/WARN
+    case "$_LOG_LEVEL_CACHE" in
+        WARN|WARNING) [[ "$level" == "INFO" || "$level" == "OK" ]] && return ;;
+        ERR|ERROR)    [[ "$level" != "ERR" ]] && return ;;
+    esac
+
+    if [[ -t 1 ]]; then printf "${color}[%s] %s${NC}\n" "$level" "$msg"; fi
 }
 
 log_info()    { log_raw "INFO" "$1" "$BLUE"; }
@@ -95,15 +114,24 @@ open_browser() {
 
 send_webhook() {
     local msg="$1"
+    local module="${2:-}"
     local url; url=$(get_config WEBHOOK_URL)
     if [[ -n "$url" ]]; then
         log_info "Sending Webhook..."
-        curl -H "Content-Type: application/json" -d "{\"content\": \"$msg\"}" "$url" >/dev/null 2>&1 || log_warning "Webhook failed."
+        local ts; ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        # Build a structured payload; include module field when provided
+        local payload
+        if [[ -n "$module" ]]; then
+            payload="{\"content\":\"${msg//\"/\\\"}\",\"embeds\":[{\"title\":\"IonScan Notification\",\"fields\":[{\"name\":\"Module\",\"value\":\"${module//\"/\\\"}\",\"inline\":true},{\"name\":\"Timestamp\",\"value\":\"$ts\",\"inline\":true}]}]}"
+        else
+            payload="{\"content\":\"${msg//\"/\\\"}\"}"
+        fi
+        curl -H "Content-Type: application/json" -d "$payload" "$url" >/dev/null 2>&1 || log_warning "Webhook failed."
     fi
 }
 
 show_help() {
-    echo -e "${BOLD}IonScan v22.0 (Git Edition) - Usage:${NC}"
+    echo -e "${BOLD}IonScan v24.0 (Git Edition) - Usage:${NC}"
     echo "  ionscan [OPTIONS]"
     echo ""
     echo "Options:"
